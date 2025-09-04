@@ -112,31 +112,92 @@
       );
     }
 
-    // Camera (FRONT by default)
+    // Camera (robust: front preferred, fallbacks + error details)
     function CameraCapture(props){
       var value = props.value, onChange = props.onChange;
       var _a = useState(false), active=_a[0], setActive=_a[1];
       var _b = useState(''), error=_b[0], setError=_b[1];
+      var _c = useState([]), cameras=_c[0], setCameras=_c[1];
+      var _d = useState(null), currentDeviceId=_d[0], setCurrentDeviceId=_d[1];
       var videoRef = useRef(null);
       var streamRef = useRef(null);
-      function start(){
-        setError('');
-        navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } }).then(function(s){
-          streamRef.current = s;
-          videoRef.current.srcObject = s;
-          videoRef.current.play().then(function(){ setActive(true); });
-        }).catch(function(){ setError('Camera unavailable. Check permissions.'); });
+
+      function attach(stream){
+        streamRef.current = stream;
+        var v = videoRef.current;
+        v.srcObject = stream;
+        v.muted = true; v.playsInline = true; v.setAttribute('playsinline','');
+        v.autoplay = true; v.setAttribute('autoplay','');
+        var pr = v.play();
+        if(pr && pr.catch){ pr.catch(function(){}); }
+        setActive(true);
       }
       function stop(){ if(streamRef.current){ streamRef.current.getTracks().forEach(function(t){t.stop();}); streamRef.current=null; } setActive(false); }
-      function takePhoto(){
-        if(!videoRef.current) return;
-        var v = videoRef.current, c = document.createElement('canvas');
-        var w = 640, h = Math.round((v.videoHeight / v.videoWidth) * 640) || 480;
-        c.width = w; c.height = h;
-        c.getContext('2d').drawImage(v, 0, 0, w, h);
-        onChange(c.toDataURL('image/jpeg', 0.85));
-        stop();
+
+      function pickFrontDevice(devs){
+        var cams = devs.filter(function(d){ return d.kind==='videoinput'; });
+        var front = cams.find(function(d){ return /front|user|face/i.test(d.label); });
+        return front || cams[0] || null;
       }
+
+      async function enumerateAfterPermission(){
+        try{
+          var devs = await navigator.mediaDevices.enumerateDevices();
+          setCameras(devs.filter(function(d){return d.kind==='videoinput';}));
+          return devs;
+        }catch(_){ return []; }
+      }
+
+      async function start(){
+        setError('');
+        stop();
+        if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+          setError('Camera API not supported on this browser.');
+          return;
+        }
+        try{
+          // Try front camera by facingMode ideal
+          var s = await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'user'}}, audio:false});
+          attach(s);
+          var devs1 = await enumerateAfterPermission();
+          var front1 = pickFrontDevice(devs1);
+          setCurrentDeviceId(front1 ? front1.deviceId : null);
+          return;
+        }catch(e1){
+          // Fallback: generic camera, then switch to labeled front if available
+          try{
+            var s2 = await navigator.mediaDevices.getUserMedia({video:true, audio:false});
+            var devs2 = await enumerateAfterPermission();
+            var chosen = s2;
+            var front2 = pickFrontDevice(devs2);
+            if(front2 && front2.deviceId){
+              s2.getTracks().forEach(function(t){t.stop();});
+              var s3 = await navigator.mediaDevices.getUserMedia({video:{deviceId:{exact:front2.deviceId}}, audio:false});
+              chosen = s3; setCurrentDeviceId(front2.deviceId);
+            }
+            attach(chosen);
+          }catch(e2){
+            setError('Camera error: ' + (e2 && e2.name ? e2.name : 'Unknown') + (e2 && e2.message ? ' – ' + e2.message : ''));
+          }
+        }
+      }
+
+      async function switchCamera(){
+        try{
+          var devs = cameras.length ? cameras : await navigator.mediaDevices.enumerateDevices();
+          var vids = devs.filter(function(d){return d.kind==='videoinput';});
+          if(!vids.length){ setError('No cameras found.'); return; }
+          var idx = vids.findIndex(function(d){return d.deviceId===currentDeviceId;});
+          var next = vids[(idx+1)%vids.length];
+          stop();
+          var s = await navigator.mediaDevices.getUserMedia({video:{deviceId:{exact:next.deviceId}}, audio:false});
+          setCurrentDeviceId(next.deviceId);
+          attach(s);
+        }catch(e){
+          setError('Switch error: ' + (e.name||'') + (e.message? ' – '+e.message : ''));
+        }
+      }
+
       return React.createElement('div', {className:'bg-gray-50 rounded-xl p-4'},
         React.createElement('h3', {className:'font-medium mb-2'}, 'Photo'),
         value ? React.createElement('div', {className:'space-y-2'},
@@ -147,16 +208,24 @@
           )
         )
         : active ? React.createElement('div', {className:'space-y-2'},
-          React.createElement('video', {ref:videoRef, className:'rounded-xl border w-full', playsInline:true, muted:true}),
+          React.createElement('video', {ref:videoRef, className:'rounded-xl border w-full', playsInline:true, muted:true, autoPlay:true}),
           React.createElement('div', {className:'flex gap-2'},
-            React.createElement('button', {onClick:takePhoto, className:'px-3 py-2 rounded-xl bg-green-600 text-white'}, 'Take photo'),
-            React.createElement('button', {onClick:stop, className:'px-3 py-2 rounded-xl bg-gray-200'}, 'Cancel')
+            React.createElement('button', {onClick:function(){ 
+              if(!videoRef.current) return;
+              var v=videoRef.current, c=document.createElement('canvas');
+              var w=640, h=Math.round((v.videoHeight/v.videoWidth)*640)||480;
+              c.width=w; c.height=h; c.getContext('2d').drawImage(v,0,0,w,h);
+              onChange(c.toDataURL('image/jpeg',0.85)); 
+              stop();
+            }, className:'px-3 py-2 rounded-xl bg-green-600 text-white'}, 'Take photo'),
+            React.createElement('button', {onClick:stop, className:'px-3 py-2 rounded-xl bg-gray-200'}, 'Cancel'),
+            React.createElement('button', {onClick:switchCamera, className:'px-3 py-2 rounded-xl bg-gray-200'}, 'Switch camera')
           )
         )
         : React.createElement('div', {className:'space-y-2'},
-          error? React.createElement('p',{className:'text-sm text-red-600'}, error) : null,
+          error? React.createElement('p',{className:'text-sm text-red-600'}, error) : React.createElement('p',{className:'text-xs text-gray-500'}, 'You may need to allow camera permissions and use HTTPS.'),
           React.createElement('button', {onClick:start, className:'px-3 py-2 rounded-xl bg-black text-white'}, 'Open camera'),
-          React.createElement('p', {className:'text-xs text-gray-500'}, 'Uses the front camera by default.')
+          React.createElement('p', {className:'text-xs text-gray-500'}, 'Prefers the front camera; use "Switch camera" if needed.')
         )
       );
     }
@@ -346,8 +415,6 @@
         var csv = toCSV(visits, headers); download(fn, csv);
       }
 
-      function resetAll(){ if(!confirm('This will clear ALL local data (workers & visits). Continue?')) return; setWorkers([]); setVisits([]); }
-
       return React.createElement('div', {className:'min-h-screen bg-gray-50 p-4 md:p-8'},
         React.createElement('header', {className:'mb-6 flex items-center justify-between'},
           React.createElement('div', null,
@@ -372,74 +439,9 @@
                 React.createElement('input',{value:search,onChange:function(e){setSearch(e.target.value);},placeholder:'Search name/company',className:'w-full border rounded-xl px-3 py-2'}),
                 React.createElement('button',{onClick:function(){ setSearch(''); },className:'text-sm underline'},'Clear')
               ),
-              React.createElement(RosterList, {people: activeWorkers.filter(function(w){ return (w.name + ' ' + w.company).toLowerCase().includes(search.toLowerCase()); }), visits:visits}),
+              React.createElement(RosterList, {people: workers.filter(function(w){ var last = lastByWorker.get(w.id); return last && last.direction==='IN' && (w.name + ' ' + w.company).toLowerCase().includes(search.toLowerCase()); }), visits:visits}),
               React.createElement('button', {onClick:function(){ window.print(); }, className:'mt-3 w-full bg-amber-500 text-white px-3 py-3 rounded-xl font-semibold'}, 'Fire Roll Call (Print)')
-            ),
-            admin ? React.createElement(React.Fragment, null,
-              React.createElement(Section, {title:'Admin – Attendance Log', right: React.createElement(Pill,null, String(visits.length) + ' records')},
-                React.createElement('div', {className:'max-h-64 overflow-auto border rounded-xl'},
-                  React.createElement('table', {className:'w-full text-sm'},
-                    React.createElement('thead', {className:'sticky top-0 bg-gray-100'},
-                      React.createElement('tr', null,
-                        React.createElement('th', {className:'text-left p-2'}, 'Time'),
-                        React.createElement('th', {className:'text-left p-2'}, 'Dir'),
-                        React.createElement('th', {className:'text-left p-2'}, 'Name'),
-                        React.createElement('th', {className:'text-left p-2'}, 'Company'),
-                        React.createElement('th', {className:'text-left p-2'}, 'Photo'),
-                        React.createElement('th', {className:'text-left p-2'}, 'PPE'),
-                        React.createElement('th', {className:'text-left p-2'}, 'Ind/RAMS')
-                      )
-                    ),
-                    React.createElement('tbody', null,
-                      visits.slice().reverse().map(function(v, i){
-                        var w = workers.find(function(x){ return x.id===v.workerId; });
-                        return React.createElement('tr', {key:v.id, className:(i%2===0?'odd:bg-white':'even:bg-gray-50')},
-                          React.createElement('td', {className:'p-2 whitespace-nowrap'}, new Date(v.timeISO).toLocaleString()),
-                          React.createElement('td', {className:'p-2'}, React.createElement('span', {className:'px-2 py-1 rounded-full text-xs ' + (v.direction==='IN'?'bg-green-100 text-green-800':'bg-red-100 text-red-800')}, v.direction)),
-                          React.createElement('td', {className:'p-2'}, w ? w.name : ''),
-                          React.createElement('td', {className:'p-2'}, w ? w.company : ''),
-                          React.createElement('td', {className:'p-2'}, v.photoDataUrl ? React.createElement('img', {src:v.photoDataUrl, alt:'snap', className:'h-10 w-10 object-cover rounded'}) : '—'),
-                          React.createElement('td', {className:'p-2'}, (v.ppe||[]).join(', ')),
-                          React.createElement('td', {className:'p-2'}, (v.induction? 'Inducted':'—') + ' / ' + (v.rams? 'RAMS':'—'))
-                        );
-                      })
-                    )
-                  )
-                ),
-                React.createElement('div', {className:'flex gap-2 mt-3'},
-                  React.createElement('button', {onClick:exportCSV, className:'px-3 py-2 rounded-xl bg-black text-white'}, 'Export CSV'),
-                  React.createElement('button', {onClick:function(){ if(confirm('Clear ALL local data?')){ localStorage.clear(); location.reload(); } }, className:'px-3 py-2 rounded-xl bg-red-600 text-white'}, 'Reset ALL data')
-                )
-              ),
-              React.createElement(Section, {title:'Admin – Settings'},
-                React.createElement(TextInput, {label:'Site name', value:settings.siteName, onChange:function(v){ setSettings(Object.assign({},settings,{siteName:v})); }}),
-                React.createElement(TextInput, {label:'Admin PIN', value:settings.adminPin, onChange:function(v){ setSettings(Object.assign({},settings,{adminPin:v})); }}),
-                React.createElement('div', {className:'grid grid-cols-1 md:grid-cols-3 gap-4'},
-                  React.createElement('div', {className:'bg-gray-50 rounded-xl p-3'},
-                    React.createElement('h3',{className:'font-medium mb-2'}, 'Mandatory declarations'),
-                    React.createElement(Checkbox, {checked:settings.requireInduction, onChange:function(v){ setSettings(Object.assign({},settings,{requireInduction:v})); }, label:'Induction completed'}),
-                    React.createElement(Checkbox, {checked:settings.requireRAMS, onChange:function(v){ setSettings(Object.assign({},settings,{requireRAMS:v})); }, label:'RAMS reviewed/acknowledged'})
-                  ),
-                  React.createElement('div', {className:'bg-gray-50 rounded-xl p-3'},
-                    React.createElement('h3',{className:'font-medium mb-2'}, 'Required PPE to sign IN'),
-                    PPE_ITEMS.map(function(p){
-                      var checked = settings.requirePPE.indexOf(p.id) !== -1;
-                      return React.createElement(Checkbox, {key:p.id, checked:checked, onChange:function(v){
-                        var next = settings.requirePPE.slice(0);
-                        if(v && next.indexOf(p.id)===-1){ next.push(p.id); }
-                        if(!v){ next = next.filter(function(x){ return x!==p.id; }); }
-                        setSettings(Object.assign({},settings,{requirePPE: next}));
-                      }, label:p.label});
-                    })
-                  ),
-                  React.createElement('div', {className:'bg-gray-50 rounded-xl p-3'},
-                    React.createElement('h3',{className:'font-medium mb-2'}, 'Photo setting'),
-                    React.createElement(Checkbox, {checked:settings.requirePhoto, onChange:function(v){ setSettings(Object.assign({},settings,{requirePhoto:v})); }, label:'Require photo on sign-in'}),
-                    React.createElement('p',{className:'text-xs text-gray-500 mt-1'}, 'If enabled, workers must capture a photo to complete sign-in.')
-                  )
-                )
-              )
-            ) : null
+            )
           )
         ),
         React.createElement('footer', {className:'mt-8 text-center text-xs text-gray-500'},
