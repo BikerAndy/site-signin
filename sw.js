@@ -1,4 +1,4 @@
-const CACHE = 'site-signin-cache-v1';
+const CACHE = 'site-signin-cache-v3';
 const ASSETS = [
   './',
   './index.html',
@@ -11,21 +11,12 @@ const ASSETS = [
   'https://unpkg.com/@babel/standalone/babel.min.js',
   'https://cdn.tailwindcss.com'
 ];
-
 self.addEventListener('install', (e) => {
-  e.waitUntil(
-    caches.open(CACHE).then((cache) => cache.addAll(ASSETS))
-  );
+  e.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(ASSETS)));
 });
-
 self.addEventListener('activate', (e) => {
-  e.waitUntil(
-    caches.keys().then(keys => Promise.all(keys.map(k => k !== CACHE ? caches.delete(k) : null)))
-  );
+  e.waitUntil(caches.keys().then(keys => Promise.all(keys.map(k => k !== CACHE ? caches.delete(k) : null))));
 });
-
 self.addEventListener('fetch', (e) => {
-  e.respondWith(
-    caches.match(e.request).then((resp) => resp || fetch(e.request))
-  );
+  e.respondWith(caches.match(e.request).then((resp) => resp || fetch(e.request)));
 });

@@ -6,18 +6,20 @@
   <title>Site Sign‑In</title>
   <link rel="manifest" href="manifest.webmanifest">
   <meta name="theme-color" content="#000000">
-  <meta name="description" content="Offline-ready site sign-in/sign-out app">
+  <meta name="description" content="Offline-ready site sign-in/sign-out app with photo capture">
   <link rel="icon" href="icons/icon-192.png">
   <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @media print {
+      body { background: #fff; }
+    }
+  </style>
 </head>
 <body class="bg-gray-50">
   <div id="root"></div>
-
-  <!-- React/Umd + Babel for inline JSX without a build step -->
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
@@ -25,7 +27,6 @@
       });
     }
   </script>
-
   <script type="text/babel" src="app.jsx"></script>
 </body>
 </html>
