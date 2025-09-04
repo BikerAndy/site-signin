@@ -4,441 +4,456 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Site Sign-In</title>
-  <script src="https://cdn.tailwindcss.com"></script>
   <meta name="description" content="Site sign-in/out app">
+  <link rel="icon" href="data:,">
+  <!-- Tailwind for quick styling (CDN). For production, switch to prebuilt CSS. -->
+  <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-gray-50">
   <div id="root"></div>
 
-  <!-- Kill any old service worker from previous builds -->
+  <!-- Unregister any old service workers (avoid stale caches) -->
   <script>
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.getRegistrations && navigator.serviceWorker.getRegistrations().then(rs => rs.forEach(r => r.unregister()));
+    if ('serviceWorker' in navigator && navigator.serviceWorker.getRegistrations) {
+      navigator.serviceWorker.getRegistrations().then(function(rs){ rs.forEach(function(r){ r.unregister(); }); });
     }
   </script>
 
-  <!-- React & Babel (dev only) -->
+  <!-- React (no Babel, no JSX) -->
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-  <!-- App (no backticks anywhere) -->
-  <script type="text/babel">
-    const { useMemo, useRef, useState, useEffect } = React;
+  <script>
+  (function(){
+    var useState = React.useState, useEffect = React.useEffect, useMemo = React.useMemo, useRef = React.useRef;
 
-    const PPE_ITEMS = [
+    var PPE_ITEMS = [
       { id: "boots", label: "Safety boots" },
       { id: "hivis", label: "Hi-vis" },
       { id: "hardhat", label: "Hard hat" },
       { id: "gloves", label: "Gloves" },
-      { id: "eyewear", label: "Eye protection" },
+      { id: "eyewear", label: "Eye protection" }
     ];
-    function uuid(){return([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g,c=>(c^crypto.getRandomValues(new Uint8Array(1))[0]&15>>c/4).toString(16));}
-    function nowISO(){return new Date().toISOString();}
 
-    const KEY_WORKERS="siteSignIn.workers";
-    const KEY_VISITS="siteSignIn.visits";
-    const KEY_SETTINGS="siteSignIn.settings";
+    function uuid(){return([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g,function(c){return (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16);});}
+    function nowISO(){ return new Date().toISOString(); }
 
-    const defaultSettings={
-      siteName:"Selfridges – Concession Works",
-      adminPin:"1234",
-      requireInduction:true,
-      requireRAMS:true,
-      requirePPE:["boots","hivis","hardhat"],
-      requirePhoto:false,
+    var KEY_WORKERS="siteSignIn.workers";
+    var KEY_VISITS="siteSignIn.visits";
+    var KEY_SETTINGS="siteSignIn.settings";
+
+    var defaultSettings = {
+      siteName: "Selfridges – Concession Works",
+      adminPin: "1234",
+      requireInduction: true,
+      requireRAMS: true,
+      requirePPE: ["boots","hivis","hardhat"],
+      requirePhoto: false
     };
 
-    function load(k,f){try{const r=localStorage.getItem(k);return r?JSON.parse(r):f;}catch{return f;}}
-    function save(k,v){localStorage.setItem(k,JSON.stringify(v));}
+    function load(k, f){ try{ var r = localStorage.getItem(k); return r ? JSON.parse(r) : f; } catch(e){ return f; } }
+    function save(k, v){ localStorage.setItem(k, JSON.stringify(v)); }
 
-    function toCSV(rows,headers){
-      const esc=s=>'"'+String(s??"").replaceAll('"','""')+'"';
-      const head=headers.map(h=>esc(h.label)).join(",");
-      const body=rows.map(r=>headers.map(h=>esc(h.get(r))).join(",")).join("\n");
-      return head+"\n"+body;
+    function toCSV(rows, headers){
+      function esc(s){ return '\"' + String(s==null?\"\":s).replaceAll('\"','\"\"') + '\"'; }
+      var head = headers.map(function(h){ return esc(h.label); }).join(',');
+      var body = rows.map(function(r){ return headers.map(function(h){ return esc(h.get(r)); }).join(','); }).join('\\n');
+      return head + '\\n' + body;
     }
-    function download(fn,content){
-      const blob=new Blob([content],{type:"text/csv;charset=utf-8;"});
-      const url=URL.createObjectURL(blob);const a=document.createElement("a");
-      a.href=url;a.download=fn;a.click();URL.revokeObjectURL(url);
+    function download(fn, content){
+      var blob = new Blob([content], {type:'text/csv;charset=utf-8;'});
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a'); a.href=url; a.download=fn; a.click(); URL.revokeObjectURL(url);
     }
 
-    function Section({title,children,right}){return(
-      <div className="bg-white rounded-2xl shadow p-5 mb-6">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xl font-semibold">{title}</h2>{right}
-        </div>{children}
-      </div>
-    );}
-    function Pill({children,className=""}){return <span className={"inline-block text-xs px-2 py-1 rounded-full bg-gray-100 "+className}>{children}</span>;}
-    function Toggle({checked,onChange,labelLeft="IN",labelRight="OUT"}){return(
-      <div className="flex items-center gap-2 bg-white rounded-full px-2 py-1 shadow">
-        <span className={"text-xs px-2 py-1 rounded-full "+(checked?"bg-red-100 text-red-800":"bg-green-100 text-green-800")}>{checked?labelRight:labelLeft}</span>
-        <button type="button" aria-label="Toggle IN/OUT" onClick={()=>onChange(!checked)} className={"w-12 h-6 rounded-full transition-all "+(checked?"bg-red-500":"bg-green-500")}>
-          <span className={"block w-5 h-5 bg-white rounded-full shadow transform transition-all "+(checked?"translate-x-6":"translate-x-1")}></span>
-        </button>
-      </div>
-    );}
-    function TextInput({label,value,onChange,placeholder="",required=false,error=""}){return(
-      <label className="block mb-3">
-        <span className="block text-sm text-gray-700 mb-1">{label}{required&&<span className="text-red-500"> *</span>}</span>
-        <input value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder}
-          className={"w-full border rounded-xl px-3 py-2 focus:outline-none focus:ring "+(error?"border-red-500 ring-red-200":"border-gray-300")} />
-        {error&&<span className="text-xs text-red-600 mt-1 block">{error}</span>}
-      </label>
-    );}
-    function Select({label,value,onChange,options,required=false,error=""}){return(
-      <label className="block mb-3">
-        <span className="block text-sm text-gray-700 mb-1">{label}{required&&<span className="text-red-500"> *</span>}</span>
-        <select value={value} onChange={e=>onChange(e.target.value)} className={"w-full border rounded-xl px-3 py-2 "+(error?"border-red-500":"border-gray-300")}>
-          {options.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
-        </select>
-        {error&&<span className="text-xs text-red-600 mt-1 block">{error}</span>}
-      </label>
-    );}
-    function Checkbox({checked,onChange,label,error=false}){return(
-      <label className={"flex items-center gap-2 mb-2 "+(error?"text-red-700":"")}>
-        <input type="checkbox" checked={checked} onChange={e=>onChange(e.target.checked)} />
-        <span>{label}{error&&" (required)"}</span>
-      </label>
-    );}
+    function Section(props){
+      return React.createElement('div', {className:'bg-white rounded-2xl shadow p-5 mb-6'},
+        React.createElement('div', {className:'flex items-center justify-between mb-4'},
+          React.createElement('h2', {className:'text-xl font-semibold'}, props.title),
+          props.right
+        ),
+        props.children
+      );
+    }
+
+    function Pill(props){
+      return React.createElement('span', {className:'inline-block text-xs px-2 py-1 rounded-full bg-gray-100 ' + (props.className||'')}, props.children);
+    }
+
+    function Toggle(props){
+      var checked = props.checked;
+      return React.createElement('div', {className:'flex items-center gap-2 bg-white rounded-full px-2 py-1 shadow'},
+        React.createElement('span', {className:'text-xs px-2 py-1 rounded-full ' + (checked?'bg-red-100 text-red-800':'bg-green-100 text-green-800')}, checked?'OUT':'IN'),
+        React.createElement('button', {type:'button','aria-label':'Toggle IN/OUT',onClick:function(){props.onChange(!checked);},className:'w-12 h-6 rounded-full transition-all ' + (checked?'bg-red-500':'bg-green-500')},
+          React.createElement('span', {className:'block w-5 h-5 bg-white rounded-full shadow transform transition-all ' + (checked?'translate-x-6':'translate-x-1')})
+        )
+      );
+    }
+
+    function TextInput(props){
+      return React.createElement('label', {className:'block mb-3'},
+        React.createElement('span', {className:'block text-sm text-gray-700 mb-1'}, props.label, props.required? React.createElement('span',{className:'text-red-500'},' *') : null),
+        React.createElement('input', {value:props.value,onChange:function(e){props.onChange(e.target.value);},placeholder:(props.placeholder||''),className:'w-full border rounded-xl px-3 py-2 focus:outline-none focus:ring ' + (props.error?'border-red-500 ring-red-200':'border-gray-300')}),
+        props.error ? React.createElement('span',{className:'text-xs text-red-600 mt-1 block'}, props.error) : null
+      );
+    }
+
+    function Select(props){
+      return React.createElement('label', {className:'block mb-3'},
+        React.createElement('span', {className:'block text-sm text-gray-700 mb-1'}, props.label, props.required? React.createElement('span',{className:'text-red-500'},' *') : null),
+        React.createElement('select', {value:props.value,onChange:function(e){props.onChange(e.target.value);},className:'w-full border rounded-xl px-3 py-2 ' + (props.error?'border-red-500':'border-gray-300')},
+          props.options.map(function(o){ return React.createElement('option',{key:o.value,value:o.value},o.label); })
+        ),
+        props.error ? React.createElement('span',{className:'text-xs text-red-600 mt-1 block'}, props.error) : null
+      );
+    }
+
+    function Checkbox(props){
+      return React.createElement('label', {className:'flex items-center gap-2 mb-2 ' + (props.error?'text-red-700':'')},
+        React.createElement('input', {type:'checkbox',checked:props.checked,onChange:function(e){props.onChange(e.target.checked);}}),
+        React.createElement('span', null, props.label, props.error? ' (required)' : '')
+      );
+    }
 
     // Camera (FRONT by default)
-    function CameraCapture({ value, onChange }) {
-      const [active,setActive]=useState(false);
-      const [error,setError]=useState("");
-      const videoRef=useRef(null);
-      const streamRef=useRef(null);
-      async function start(){
-        setError("");
-        try{
-          const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:"user"}});
-          streamRef.current=s; videoRef.current.srcObject=s; await videoRef.current.play(); setActive(true);
-        }catch(e){setError("Camera unavailable. Check permissions.");}
+    function CameraCapture(props){
+      var value = props.value, onChange = props.onChange;
+      var _a = useState(false), active=_a[0], setActive=_a[1];
+      var _b = useState(''), error=_b[0], setError=_b[1];
+      var videoRef = useRef(null);
+      var streamRef = useRef(null);
+      function start(){
+        setError('');
+        navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } }).then(function(s){
+          streamRef.current = s;
+          videoRef.current.srcObject = s;
+          videoRef.current.play().then(function(){ setActive(true); });
+        }).catch(function(){ setError('Camera unavailable. Check permissions.'); });
       }
-      function stop(){ if(streamRef.current){ streamRef.current.getTracks().forEach(t=>t.stop()); streamRef.current=null; } setActive(false); }
+      function stop(){ if(streamRef.current){ streamRef.current.getTracks().forEach(function(t){t.stop();}); streamRef.current=null; } setActive(false); }
       function takePhoto(){
         if(!videoRef.current) return;
-        const v=videoRef.current, c=document.createElement("canvas");
-        const w=640, h=Math.round((v.videoHeight/v.videoWidth)*640)||480;
-        c.width=w; c.height=h; c.getContext("2d").drawImage(v,0,0,w,h);
-        onChange(c.toDataURL("image/jpeg",0.85)); stop();
+        var v = videoRef.current, c = document.createElement('canvas');
+        var w = 640, h = Math.round((v.videoHeight / v.videoWidth) * 640) || 480;
+        c.width = w; c.height = h;
+        c.getContext('2d').drawImage(v, 0, 0, w, h);
+        onChange(c.toDataURL('image/jpeg', 0.85));
+        stop();
       }
-      return (
-        <div className="bg-gray-50 rounded-xl p-4">
-          <h3 className="font-medium mb-2">Photo</h3>
-          {value ? (
-            <div className="space-y-2">
-              <img src={value} alt="Captured" className="rounded-xl border max-h-48" />
-              <div className="flex gap-2">
-                <button onClick={()=>onChange("")} className="px-3 py-2 rounded-xl bg-gray-200">Remove</button>
-                <button onClick={start} className="px-3 py-2 rounded-xl bg-black text-white">Retake</button>
-              </div>
-            </div>
-          ) : active ? (
-            <div className="space-y-2">
-              <video ref={videoRef} className="rounded-xl border w-full" playsInline muted />
-              <div className="flex gap-2">
-                <button onClick={takePhoto} className="px-3 py-2 rounded-xl bg-green-600 text-white">Take photo</button>
-                <button onClick={stop} className="px-3 py-2 rounded-xl bg-gray-200">Cancel</button>
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {error && <p className="text-sm text-red-600">{error}</p>}
-              <button onClick={start} className="px-3 py-2 rounded-xl bg-black text-white">Open camera</button>
-              <p className="text-xs text-gray-500">Uses the front camera by default.</p>
-            </div>
-          )}
-        </div>
+      return React.createElement('div', {className:'bg-gray-50 rounded-xl p-4'},
+        React.createElement('h3', {className:'font-medium mb-2'}, 'Photo'),
+        value ? React.createElement('div', {className:'space-y-2'},
+          React.createElement('img', {src:value, alt:'Captured', className:'rounded-xl border max-h-48'}),
+          React.createElement('div', {className:'flex gap-2'},
+            React.createElement('button', {onClick:function(){onChange('');}, className:'px-3 py-2 rounded-xl bg-gray-200'}, 'Remove'),
+            React.createElement('button', {onClick:start, className:'px-3 py-2 rounded-xl bg-black text-white'}, 'Retake')
+          )
+        )
+        : active ? React.createElement('div', {className:'space-y-2'},
+          React.createElement('video', {ref:videoRef, className:'rounded-xl border w-full', playsInline:true, muted:true}),
+          React.createElement('div', {className:'flex gap-2'},
+            React.createElement('button', {onClick:takePhoto, className:'px-3 py-2 rounded-xl bg-green-600 text-white'}, 'Take photo'),
+            React.createElement('button', {onClick:stop, className:'px-3 py-2 rounded-xl bg-gray-200'}, 'Cancel')
+          )
+        )
+        : React.createElement('div', {className:'space-y-2'},
+          error? React.createElement('p',{className:'text-sm text-red-600'}, error) : null,
+          React.createElement('button', {onClick:start, className:'px-3 py-2 rounded-xl bg-black text-white'}, 'Open camera'),
+          React.createElement('p', {className:'text-xs text-gray-500'}, 'Uses the front camera by default.')
+        )
       );
     }
 
     function getLastIn(visits, workerId){
-      const v=[...visits].reverse().find(v=>v.workerId===workerId && v.direction==="IN");
-      return v? v.timeISO : null;
+      var v = visits.slice().reverse().find(function(x){ return x.workerId===workerId && x.direction==='IN'; });
+      return v ? v.timeISO : null;
     }
 
-    function RosterList({ people, visits }) {
-      if (people.length===0) return <p className="text-sm text-gray-500">No one on site.</p>;
-      return (
-        <ul className="divide-y">
-          {people.map(p=>{
-            const since=getLastIn(visits,p.id);
-            return (
-              <li key={p.id} className="py-2 flex items-center justify-between">
-                <div>
-                  <div className="font-medium">{p.name}</div>
-                  <div className="text-xs text-gray-600">{p.company} · {p.role}</div>
-                  {since && <div className="text-xs text-gray-500">IN since {new Date(since).toLocaleTimeString()}</div>}
-                </div>
-                <Pill>On site</Pill>
-              </li>
-            );
-          })}
-        </ul>
+    function RosterList(props){
+      var people = props.people, visits = props.visits;
+      if(people.length===0) return React.createElement('p',{className:'text-sm text-gray-500'}, 'No one on site.');
+      return React.createElement('ul', {className:'divide-y'},
+        people.map(function(p){
+          var since = getLastIn(visits, p.id);
+          return React.createElement('li', {key:p.id, className:'py-2 flex items-center justify-between'},
+            React.createElement('div', null,
+              React.createElement('div', {className:'font-medium'}, p.name),
+              React.createElement('div', {className:'text-xs text-gray-600'}, (p.company||'') + ' · ' + (p.role||'')),
+              since ? React.createElement('div', {className:'text-xs text-gray-500'}, 'IN since ' + new Date(since).toLocaleTimeString()) : null
+            ),
+            React.createElement(Pill, null, 'On site')
+          );
+        })
       );
     }
 
-    function SignForm({ mode, settings, onUpsert, onVisit, workers, onModeToggle }) {
-      const [existingId,setExistingId]=useState("");
-      const [name,setName]=useState("");
-      const [company,setCompany]=useState("");
-      const [role,setRole]=useState("");
-      const [cscs,setCscs]=useState("");
-      const [phone,setPhone]=useState("");
-      const [email,setEmail]=useState("");
-      const [emergencyContact,setEmergencyContact]=useState("");
-      const [vehicleReg,setVehicleReg]=useState("");
-      const [ppe,setPpe]=useState([]);
-      const [induction,setInduction]=useState(false);
-      const [rams,setRams]=useState(false);
-      const [notes,setNotes]=useState("");
-      const [ack,setAck]=useState(false);
-      const [photoDataUrl,setPhotoDataUrl]=useState("");
-      const [errors,setErrors]=useState({});
+    function SignForm(props){
+      var mode=props.mode, settings=props.settings, onUpsert=props.onUpsert, onVisit=props.onVisit, workers=props.workers, onModeToggle=props.onModeToggle, lastByWorker=props.lastByWorker;
+      var _a = useState(''), existingId=_a[0], setExistingId=_a[1];
+      var _b = useState(''), name=_b[0], setName=_b[1];
+      var _c = useState(''), company=_c[0], setCompany=_c[1];
+      var _d = useState(''), role=_d[0], setRole=_d[1];
+      var _e = useState(''), cscs=_e[0], setCscs=_e[1];
+      var _f = useState(''), phone=_f[0], setPhone=_f[1];
+      var _g = useState(''), email=_g[0], setEmail=_g[1];
+      var _h = useState(''), emergencyContact=_h[0], setEmergencyContact=_h[1];
+      var _i = useState(''), vehicleReg=_i[0], setVehicleReg=_i[1];
+      var _j = useState([]), ppe=_j[0], setPpe=_j[1];
+      var _k = useState(false), induction=_k[0], setInduction=_k[1];
+      var _l = useState(false), rams=_l[0], setRams=_l[1];
+      var _m = useState(''), notes=_m[0], setNotes=_m[1];
+      var _n = useState(false), ack=_n[0], setAck=_n[1];
+      var _o = useState(''), photoDataUrl=_o[0], setPhotoDataUrl=_o[1];
+      var _p = useState({}), errors=_p[0], setErrors=_p[1];
 
-      useEffect(()=>{
+      useEffect(function(){
         if(!existingId) return;
-        const w=workers.find(w=>w.id===existingId);
-        if(w){ setName(w.name||""); setCompany(w.company||""); setRole(w.role||""); setCscs(w.cscs||"");
-          setPhone(w.phone||""); setEmail(w.email||""); setEmergencyContact(w.emergencyContact||""); setVehicleReg(w.vehicleReg||""); }
-      },[existingId]);
+        var w = workers.find(function(x){ return x.id===existingId; });
+        if(w){
+          setName(w.name||''); setCompany(w.company||''); setRole(w.role||''); setCscs(w.cscs||'');
+          setPhone(w.phone||''); setEmail(w.email||''); setEmergencyContact(w.emergencyContact||''); setVehicleReg(w.vehicleReg||'');
+        }
+      }, [existingId, workers]);
 
-      function togglePPE(id){ setPpe(prev=>prev.includes(id)? prev.filter(x=>x!==id): [...prev,id]); }
+      function togglePPE(id){ setPpe(function(prev){ return prev.includes(id) ? prev.filter(function(x){return x!==id;}) : prev.concat([id]); }); }
 
       function validate(){
-        const e={};
-        if(!name.trim()) e.name="Name is required";
-        if(!company.trim()) e.company="Company is required";
-        if(mode==="IN"){
-          if(settings.requireInduction && !induction) e.induction=true;
-          if(settings.requireRAMS && !rams) e.rams=true;
-          const missing=(settings.requirePPE||[]).filter(id=>!ppe.includes(id));
-          if(missing.length) e.ppe=missing;
-          if(settings.requirePhoto && !photoDataUrl) e.photo=true;
-          if(!ack) e.ack=true;
+        var e = {};
+        if(mode==='OUT'){
+          if(!existingId) e.existingId = 'Select a person to sign out';
+          var last = existingId ? (lastByWorker && lastByWorker.get(existingId)) : null;
+          if(!last || last.direction!=='IN') e.notOnSite = true;
+        } else {
+          if(!name.trim()) e.name='Name is required';
+          if(!company.trim()) e.company='Company is required';
+          if(settings.requireInduction && !induction) e.induction = true;
+          if(settings.requireRAMS && !rams) e.rams = true;
+          var missing = (settings.requirePPE||[]).filter(function(id){ return !ppe.includes(id); });
+          if(missing.length) e.ppe = missing;
+          if(settings.requirePhoto && !photoDataUrl) e.photo = true;
+          if(!ack) e.ack = true;
         }
         setErrors(e);
         return Object.keys(e).length===0;
       }
 
       function submit(){
-        if(!validate()){ alert("Please complete highlighted fields before continuing."); return; }
-        let workerId=existingId || uuid();
-        const profile={ id:workerId, name, company, role, cscs, phone, email, emergencyContact, vehicleReg };
+        if(!validate()){ alert('Please fix the highlighted fields first.'); return; }
+        var workerId = existingId || uuid();
+        var profile = { id:workerId, name:name, company:company, role:role, cscs:cscs, phone:phone, email:email, emergencyContact:emergencyContact, vehicleReg:vehicleReg };
         onUpsert(profile);
-        onVisit(workerId, mode, { ppe, induction, rams, notes, photoDataUrl });
-        setExistingId(""); setName(""); setCompany(""); setRole(""); setCscs(""); setPhone(""); setEmail(""); setEmergencyContact(""); setVehicleReg("");
-        setPpe([]); setInduction(false); setRams(false); setNotes(""); setAck(false); setPhotoDataUrl(""); setErrors({});
-        alert("Successfully signed " + (mode==="IN" ? "IN" : "OUT") + ".");
+        onVisit(workerId, mode, { ppe:ppe, induction:induction, rams:rams, notes:notes, photoDataUrl:photoDataUrl });
+        setExistingId(''); setName(''); setCompany(''); setRole(''); setCscs(''); setPhone(''); setEmail(''); setEmergencyContact(''); setVehicleReg('');
+        setPpe([]); setInduction(false); setRams(false); setNotes(''); setAck(false); setPhotoDataUrl(''); setErrors({});
+        alert('Successfully signed ' + (mode==='IN' ? 'IN' : 'OUT') + '.');
       }
 
-      const existingOpts=[{value:"",label:"— New person —"}]
-        .concat(workers.map(function(w){ return { value:w.id, label: (w.name + " (" + w.company + ")") }; }));
+      var existingOpts = [{value:'',label:'— New person —'}].concat(
+        workers.map(function(w){ return { value:w.id, label:(w.name + ' (' + w.company + ')') }; })
+      );
 
-      return (
-        <Section title={"Sign " + (mode==="IN" ? "IN" : "OUT")} right={<Toggle checked={mode==="OUT"} onChange={onModeToggle} />}>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <Select label="Existing person" value={existingId} onChange={setExistingId} options={existingOpts} />
-            <TextInput label="Full name" value={name} onChange={setName} required error={errors.name||""}/>
-            <TextInput label="Company" value={company} onChange={setCompany} required error={errors.company||""}/>
-            <TextInput label="Trade/Role" value={role} onChange={setRole}/>
-            <TextInput label="CSCS No. (optional)" value={cscs} onChange={setCscs}/>
-            <TextInput label="Mobile (optional)" value={phone} onChange={setPhone}/>
-            <TextInput label="Email (optional)" value={email} onChange={setEmail}/>
-            <TextInput label="Emergency contact (optional)" value={emergencyContact} onChange={setEmergencyContact}/>
-            <TextInput label="Vehicle reg (optional)" value={vehicleReg} onChange={setVehicleReg}/>
-          </div>
-
-          {mode==='IN' && (
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
-              <div className="bg-gray-50 rounded-xl p-4">
-                <h3 className="font-medium mb-2">PPE on person</h3>
-                {PPE_ITEMS.map(p=>(
-                  <Checkbox key={p.id} checked={ppe.includes(p.id)} onChange={()=>togglePPE(p.id)} label={p.label} error={errors.ppe && errors.ppe.includes(p.id)} />
-                ))}
-              </div>
-              <div className="bg-gray-50 rounded-xl p-4">
-                <h3 className="font-medium mb-2">Declarations</h3>
-                <Checkbox checked={induction} onChange={setInduction} label="I have completed the site induction" error={!!errors.induction}/>
-                <Checkbox checked={rams} onChange={setRams} label="I have read and understood applicable RAMS" error={!!errors.rams}/>
-                <Checkbox checked={ack} onChange={setAck} label="I understand site rules and emergency procedures" error={!!errors.ack}/>
-              </div>
-              <div>
-                <CameraCapture value={photoDataUrl} onChange={setPhotoDataUrl}/>
-                {errors.photo && <p className="text-xs text-red-600 mt-1">Photo is required</p>}
-              </div>
-            </div>
-          )}
-
-          <div className="mt-4 flex flex-col md:flex-row gap-3">
-            <button onClick={submit} className={"px-4 py-3 rounded-xl text-white font-semibold "+(mode==='IN'?'bg-green-600':'bg-red-600')}>Sign {mode==='IN'?'IN':'OUT'}</button>
-            <button onClick={()=>{
-              setExistingId(""); setName(""); setCompany(""); setRole(""); setCscs(""); setPhone(""); setEmail("");
-              setEmergencyContact(""); setVehicleReg(""); setPpe([]); setInduction(false); setRams(false); setNotes(""); setAck(false); setPhotoDataUrl(""); setErrors({});
-            }} className="px-4 py-3 rounded-xl bg-gray-200">Clear</button>
-          </div>
-        </Section>
+      return React.createElement(Section, {title:'Sign ' + (mode==='IN' ? 'IN' : 'OUT'), right: React.createElement(Toggle,{checked:mode==='OUT', onChange:onModeToggle})},
+        React.createElement('div', {className:'grid grid-cols-1 md:grid-cols-2 gap-4'},
+          React.createElement(Select, {label:'Existing person' + (mode==='OUT'?' (required for OUT)':''), value:existingId, onChange:setExistingId, options:existingOpts, error:(errors.existingId ? errors.existingId : (errors.notOnSite ? 'Selected person is not currently signed in' : '')) }),
+          React.createElement(TextInput, {label:'Full name', value:name, onChange:setName, required:(mode==='IN'), error:(errors.name||'')}),
+          React.createElement(TextInput, {label:'Company', value:company, onChange:setCompany, required:(mode==='IN'), error:(errors.company||'')}),
+          React.createElement(TextInput, {label:'Trade/Role', value:role, onChange:setRole}),
+          React.createElement(TextInput, {label:'CSCS No. (optional)', value:cscs, onChange:setCscs}),
+          React.createElement(TextInput, {label:'Mobile (optional)', value:phone, onChange:setPhone}),
+          React.createElement(TextInput, {label:'Email (optional)', value:email, onChange:setEmail}),
+          React.createElement(TextInput, {label:'Emergency contact (optional)', value:emergencyContact, onChange:setEmergencyContact}),
+          React.createElement(TextInput, {label:'Vehicle reg (optional)', value:vehicleReg, onChange:setVehicleReg})
+        ),
+        mode==='IN' ? React.createElement('div', {className:'grid grid-cols-1 md:grid-cols-3 gap-4 mt-4'},
+          React.createElement('div', {className:'bg-gray-50 rounded-xl p-4'},
+            React.createElement('h3',{className:'font-medium mb-2'}, 'PPE on person'),
+            PPE_ITEMS.map(function(p){
+              return React.createElement(Checkbox, {key:p.id, checked:ppe.includes(p.id), onChange:function(){ togglePPE(p.id); }, label:p.label, error:(errors.ppe && errors.ppe.includes(p.id)) });
+            })
+          ),
+          React.createElement('div', {className:'bg-gray-50 rounded-xl p-4'},
+            React.createElement('h3',{className:'font-medium mb-2'}, 'Declarations'),
+            React.createElement(Checkbox,{checked:induction,onChange:setInduction,label:'I have completed the site induction',error:!!errors.induction}),
+            React.createElement(Checkbox,{checked:rams,onChange:setRams,label:'I have read and understood applicable RAMS',error:!!errors.rams}),
+            React.createElement(Checkbox,{checked:ack,onChange:setAck,label:'I understand site rules and emergency procedures',error:!!errors.ack})
+          ),
+          React.createElement('div', null,
+            React.createElement(CameraCapture, {value:photoDataUrl, onChange:setPhotoDataUrl}),
+            errors.photo ? React.createElement('p', {className:'text-xs text-red-600 mt-1'}, 'Photo is required') : null
+          )
+        ) : null,
+        React.createElement('div', {className:'mt-4 flex flex-col md:flex-row gap-3'},
+          React.createElement('button', {onClick:submit, className:'px-4 py-3 rounded-xl text-white font-semibold ' + (mode==='IN'?'bg-green-600':'bg-red-600')}, 'Sign ' + (mode==='IN'?'IN':'OUT')),
+          React.createElement('button', {onClick:function(){ setExistingId(''); setName(''); setCompany(''); setRole(''); setCscs(''); setPhone(''); setEmail(''); setEmergencyContact(''); setVehicleReg(''); setPpe([]); setInduction(false); setRams(false); setNotes(''); setAck(false); setPhotoDataUrl(''); setErrors({}); }, className:'px-4 py-3 rounded-xl bg-gray-200'}, 'Clear')
+        )
       );
     }
 
     function App(){
-      const [settings,setSettings]=useState(()=>({...defaultSettings,...load(KEY_SETTINGS,{})}));
-      const [workers,setWorkers]=useState(()=>load(KEY_WORKERS,[]));
-      const [visits,setVisits]=useState(()=>load(KEY_VISITS,[]));
-      const [admin,setAdmin]=useState(false);
-      const [pinInput,setPinInput]=useState("");
-      const [mode,setMode]=useState("IN");
-      const [search,setSearch]=useState("");
+      var _a = useState(function(){ return Object.assign({}, defaultSettings, load(KEY_SETTINGS,{})); }), settings=_a[0], setSettings=_a[1];
+      var _b = useState(function(){ return load(KEY_WORKERS,[]); }), workers=_b[0], setWorkers=_b[1];
+      var _c = useState(function(){ return load(KEY_VISITS,[]); }), visits=_c[0], setVisits=_c[1];
+      var _d = useState(false), admin=_d[0], setAdmin=_d[1];
+      var _e = useState(''), pinInput=_e[0], setPinInput=_e[1];
+      var _f = useState('IN'), mode=_f[0], setMode=_f[1];
+      var _g = useState(''), search=_g[0], setSearch=_g[1];
 
-      useEffect(()=>save(KEY_SETTINGS,settings),[settings]);
-      useEffect(()=>save(KEY_WORKERS,workers),[workers]);
-      useEffect(()=>save(KEY_VISITS,visits),[visits]);
+      useEffect(function(){ save(KEY_SETTINGS, settings); }, [settings]);
+      useEffect(function(){ save(KEY_WORKERS, workers); }, [workers]);
+      useEffect(function(){ save(KEY_VISITS, visits); }, [visits]);
 
-      const lastByWorker=useMemo(()=>{const m=new Map();for(const v of visits)m.set(v.workerId,v);return m;},[visits]);
-      const activeWorkers=workers.filter(w=>lastByWorker.get(w.id)?.direction==="IN");
+      var lastByWorker = useMemo(function(){
+        var map = new Map();
+        for(var i=0;i<visits.length;i++){ var v=visits[i]; map.set(v.workerId, v); }
+        return map;
+      }, [visits]);
+
+      var activeWorkers = workers.filter(function(w){ var last = lastByWorker.get(w.id); return last && last.direction==='IN'; });
 
       function upsertWorker(profile){
-        setWorkers(prev=>{const i=prev.findIndex(p=>p.id===profile.id); if(i===-1) return [...prev,profile]; const c=[...prev]; c[i]=profile; return c;});
+        setWorkers(function(prev){
+          var i = prev.findIndex(function(p){ return p.id===profile.id; });
+          if(i===-1) return prev.concat([profile]);
+          var copy = prev.slice(0); copy[i]=profile; return copy;
+        });
       }
-      function recordVisit(workerId,direction,payload){
-        const visit={id:uuid(),workerId,direction,timeISO:nowISO(),...payload};
-        setVisits(v=>[...v,visit]);
+
+      function recordVisit(workerId, direction, payload){
+        if(direction==='OUT'){
+          var last = lastByWorker.get(workerId);
+          if(!last || last.direction!=='IN'){
+            alert('Cannot sign out someone who is not currently signed in.');
+            return;
+          }
+        }
+        var visit = { id:uuid(), workerId:workerId, direction:direction, timeISO:nowISO() };
+        for(var k in payload){ if(Object.prototype.hasOwnProperty.call(payload,k)){ visit[k]=payload[k]; } }
+        setVisits(function(v){ return v.concat([visit]); });
       }
+
       function exportCSV(){
-        const headers=[
-          {label:"Timestamp",get:r=>r.timeISO},
-          {label:"Direction",get:r=>r.direction},
-          {label:"Name",get:r=>workers.find(w=>w.id===r.workerId)?.name||""},
-          {label:"Company",get:r=>workers.find(w=>w.id===r.workerId)?.company||""},
-          {label:"Role",get:r=>workers.find(w=>w.id===r.workerId)?.role||""},
-          {label:"CSCS",get:r=>workers.find(w=>w.id===r.workerId)?.cscs||""},
-          {label:"Phone",get:r=>workers.find(w=>w.id===r.workerId)?.phone||""},
-          {label:"Induction",get:r=>r.induction?"Yes":"No"},
-          {label:"RAMS Ack",get:r=>r.rams?"Yes":"No"},
-          {label:"PPE",get:r=>(r.ppe||[]).join(";")},
-          {label:"Notes",get:r=>r.notes||""},
+        var headers=[
+          {label:'Timestamp',get:function(r){return r.timeISO;}},
+          {label:'Direction',get:function(r){return r.direction;}},
+          {label:'Name',get:function(r){ var w=workers.find(function(x){return x.id===r.workerId;}); return w? w.name : ''; }},
+          {label:'Company',get:function(r){ var w=workers.find(function(x){return x.id===r.workerId;}); return w? w.company : ''; }},
+          {label:'Role',get:function(r){ var w=workers.find(function(x){return x.id===r.workerId;}); return w? w.role : ''; }},
+          {label:'CSCS',get:function(r){ var w=workers.find(function(x){return x.id===r.workerId;}); return w? w.cscs : ''; }},
+          {label:'Phone',get:function(r){ var w=workers.find(function(x){return x.id===r.workerId;}); return w? w.phone : ''; }},
+          {label:'Induction',get:function(r){ return r.induction ? 'Yes' : 'No'; }},
+          {label:'RAMS Ack',get:function(r){ return r.rams ? 'Yes' : 'No'; }},
+          {label:'PPE',get:function(r){ return (r.ppe||[]).join(';'); }},
+          {label:'Notes',get:function(r){ return r.notes || ''; }}
         ];
-        const fn = "site-attendance_" + new Date().toISOString().slice(0,10) + ".csv";
-        const csv=toCSV(visits,headers); download(fn,csv);
+        var fn = 'site-attendance_' + new Date().toISOString().slice(0,10) + '.csv';
+        var csv = toCSV(visits, headers); download(fn, csv);
       }
-      function resetAll(){ if(!confirm("This will clear ALL local data (workers & visits). Continue?")) return; setWorkers([]); setVisits([]); }
 
-      return (
-        <div className="min-h-screen bg-gray-50 p-4 md:p-8">
-          <header className="mb-6 flex items-center justify-between">
-            <div>
-              <h1 className="text-2xl md:text-3xl font-bold">{settings.siteName}</h1>
-              <p className="text-sm text-gray-600">Site Sign-In / Sign-Out (Offline-ready)</p>
-            </div>
-            <div className="flex items-center gap-3">
-              <Toggle checked={mode==="OUT"} onChange={(c)=>setMode(c?"OUT":"IN")} />
-              {!admin ? (
-                <div className="flex items-center gap-2">
-                  <input value={pinInput} onChange={e=>setPinInput(e.target.value)} placeholder="Admin PIN" className="w-28 border rounded-xl px-3 py-1" />
-                  <button onClick={()=>setAdmin(pinInput===settings.adminPin)} className="px-3 py-2 rounded-xl bg-black text-white">Admin</button>
-                </div>
-              ) : (
-                <button onClick={()=>setAdmin(false)} className="px-3 py-2 rounded-xl bg-gray-800 text-white">Exit Admin</button>
-              )}
-            </div>
-          </header>
+      function resetAll(){ if(!confirm('This will clear ALL local data (workers & visits). Continue?')) return; setWorkers([]); setVisits([]); }
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-2">
-              <SignForm mode={mode} settings={settings} onUpsert={upsertWorker} onVisit={recordVisit} workers={workers} onModeToggle={()=>setMode(mode==="IN"?"OUT":"IN")} />
-            </div>
-
-            <div className="lg:col-span-1">
-              <Section title="On-site right now" right={<button onClick={exportCSV} className="text-sm bg-black text-white px-3 py-2 rounded-xl">Export CSV</button>}>
-                <div className="flex items-center gap-2 mb-2">
-                  <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search name/company" className="w-full border rounded-xl px-3 py-2" />
-                  <button onClick={()=>setSearch("")} className="text-sm underline">Clear</button>
-                </div>
-                <RosterList people={activeWorkers.filter(w=>(w.name+" "+w.company).toLowerCase().includes(search.toLowerCase()))} visits={visits}/>
-                <button onClick={()=>window.print()} className="mt-3 w-full bg-amber-500 text-white px-3 py-3 rounded-xl font-semibold">Fire Roll Call (Print)</button>
-              </Section>
-
-              {admin && (
-                <>
-                  <Section title="Admin – Attendance Log" right={<Pill>{visits.length} records</Pill>}>
-                    <div className="max-h-64 overflow-auto border rounded-xl">
-                      <table className="w-full text-sm">
-                        <thead className="sticky top-0 bg-gray-100">
-                          <tr>
-                            <th className="text-left p-2">Time</th>
-                            <th className="text-left p-2">Dir</th>
-                            <th className="text-left p-2">Name</th>
-                            <th className="text-left p-2">Company</th>
-                            <th className="text-left p-2">Photo</th>
-                            <th className="text-left p-2">PPE</th>
-                            <th className="text-left p-2">Ind/RAMS</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {visits.slice().reverse().map(v=>{
-                            const w=workers.find(x=>x.id===v.workerId);
-                            return (
-                              <tr key={v.id} className="odd:bg-white even:bg-gray-50">
-                                <td className="p-2 whitespace-nowrap">{new Date(v.timeISO).toLocaleString()}</td>
-                                <td className="p-2"><span className={"px-2 py-1 rounded-full text-xs "+(v.direction==='IN'?'bg-green-100 text-green-800':'bg-red-100 text-red-800')}>{v.direction}</span></td>
-                                <td className="p-2">{w?.name}</td>
-                                <td className="p-2">{w?.company}</td>
-                                <td className="p-2">{v.photoDataUrl ? <img src={v.photoDataUrl} alt="snap" className="h-10 w-10 object-cover rounded" /> : "—"}</td>
-                                <td className="p-2">{(v.ppe||[]).join(', ')}</td>
-                                <td className="p-2">{v.induction? 'Inducted' : '—'} / {v.rams? 'RAMS' : '—'}</td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                    <div className="flex gap-2 mt-3">
-                      <button onClick={exportCSV} className="px-3 py-2 rounded-xl bg-black text-white">Export CSV</button>
-                      <button onClick={()=>{ if(confirm("Clear ALL local data?")){ localStorage.clear(); location.reload(); }}} className="px-3 py-2 rounded-xl bg-red-600 text-white">Reset ALL data</button>
-                    </div>
-                  </Section>
-
-                  <Section title="Admin – Settings">
-                    <TextInput label="Site name" value={settings.siteName} onChange={v=>setSettings(s=>({...s,siteName:v}))}/>
-                    <TextInput label="Admin PIN" value={settings.adminPin} onChange={v=>setSettings(s=>({...s,adminPin:v}))}/>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                      <div className="bg-gray-50 rounded-xl p-3">
-                        <h3 className="font-medium mb-2">Mandatory declarations</h3>
-                        <Checkbox checked={settings.requireInduction} onChange={v=>setSettings(s=>({...s,requireInduction:v}))} label="Induction completed"/>
-                        <Checkbox checked={settings.requireRAMS} onChange={v=>setSettings(s=>({...s,requireRAMS:v}))} label="RAMS reviewed/acknowledged"/>
-                      </div>
-                      <div className="bg-gray-50 rounded-xl p-3">
-                        <h3 className="font-medium mb-2">Required PPE to sign IN</h3>
-                        {PPE_ITEMS.map(p=>(
-                          <Checkbox key={p.id} checked={settings.requirePPE.includes(p.id)} onChange={(v)=>{
-                            setSettings(s=>({...s, requirePPE: v? Array.from(new Set([...s.requirePPE,p.id])) : s.requirePPE.filter(x=>x!==p.id)}));
-                          }} label={p.label}/>
-                        ))}
-                      </div>
-                      <div className="bg-gray-50 rounded-xl p-3">
-                        <h3 className="font-medium mb-2">Photo setting</h3>
-                        <Checkbox checked={settings.requirePhoto} onChange={v=>setSettings(s=>({...s,requirePhoto:v}))} label="Require photo on sign-in"/>
-                        <p className="text-xs text-gray-500 mt-1">If enabled, workers must capture a photo to complete sign-in.</p>
-                      </div>
-                    </div>
-                  </Section>
-                </>
-              )}
-            </div>
-          </div>
-
-          <footer className="mt-8 text-center text-xs text-gray-500">
-            <p>Data is stored locally in this browser. Export CSV for backups. © {(new Date()).getFullYear()} RSK Consultancy – Site Kiosk MVP</p>
-          </footer>
-        </div>
+      return React.createElement('div', {className:'min-h-screen bg-gray-50 p-4 md:p-8'},
+        React.createElement('header', {className:'mb-6 flex items-center justify-between'},
+          React.createElement('div', null,
+            React.createElement('h1', {className:'text-2xl md:text-3xl font-bold'}, settings.siteName),
+            React.createElement('p', {className:'text-sm text-gray-600'}, 'Site Sign-In / Sign-Out (Offline-ready)')
+          ),
+          React.createElement('div', {className:'flex items-center gap-3'},
+            React.createElement(Toggle, {checked:mode==='OUT', onChange:function(c){ setMode(c?'OUT':'IN'); }}),
+            !admin ? React.createElement('div',{className:'flex items-center gap-2'},
+              React.createElement('input',{value:pinInput,onChange:function(e){setPinInput(e.target.value);},placeholder:'Admin PIN',className:'w-28 border rounded-xl px-3 py-1'}),
+              React.createElement('button',{onClick:function(){ setAdmin(pinInput===settings.adminPin); },className:'px-3 py-2 rounded-xl bg-black text-white'},'Admin')
+            ) : React.createElement('button',{onClick:function(){ setAdmin(false); },className:'px-3 py-2 rounded-xl bg-gray-800 text-white'},'Exit Admin')
+          )
+        ),
+        React.createElement('div', {className:'grid grid-cols-1 lg:grid-cols-3 gap-6'},
+          React.createElement('div', {className:'lg:col-span-2'},
+            React.createElement(SignForm, {mode:mode, settings:settings, onUpsert:upsertWorker, onVisit:recordVisit, workers:workers, onModeToggle:function(){ setMode(mode==='IN'?'OUT':'IN'); }, lastByWorker:lastByWorker })
+          ),
+          React.createElement('div', {className:'lg:col-span-1'},
+            React.createElement(Section, {title:'On-site right now', right: React.createElement('button',{onClick:exportCSV,className:'text-sm bg-black text-white px-3 py-2 rounded-xl'}, 'Export CSV')},
+              React.createElement('div', {className:'flex items-center gap-2 mb-2'},
+                React.createElement('input',{value:search,onChange:function(e){setSearch(e.target.value);},placeholder:'Search name/company',className:'w-full border rounded-xl px-3 py-2'}),
+                React.createElement('button',{onClick:function(){ setSearch(''); },className:'text-sm underline'},'Clear')
+              ),
+              React.createElement(RosterList, {people: activeWorkers.filter(function(w){ return (w.name + ' ' + w.company).toLowerCase().includes(search.toLowerCase()); }), visits:visits}),
+              React.createElement('button', {onClick:function(){ window.print(); }, className:'mt-3 w-full bg-amber-500 text-white px-3 py-3 rounded-xl font-semibold'}, 'Fire Roll Call (Print)')
+            ),
+            admin ? React.createElement(React.Fragment, null,
+              React.createElement(Section, {title:'Admin – Attendance Log', right: React.createElement(Pill,null, String(visits.length) + ' records')},
+                React.createElement('div', {className:'max-h-64 overflow-auto border rounded-xl'},
+                  React.createElement('table', {className:'w-full text-sm'},
+                    React.createElement('thead', {className:'sticky top-0 bg-gray-100'},
+                      React.createElement('tr', null,
+                        React.createElement('th', {className:'text-left p-2'}, 'Time'),
+                        React.createElement('th', {className:'text-left p-2'}, 'Dir'),
+                        React.createElement('th', {className:'text-left p-2'}, 'Name'),
+                        React.createElement('th', {className:'text-left p-2'}, 'Company'),
+                        React.createElement('th', {className:'text-left p-2'}, 'Photo'),
+                        React.createElement('th', {className:'text-left p-2'}, 'PPE'),
+                        React.createElement('th', {className:'text-left p-2'}, 'Ind/RAMS')
+                      )
+                    ),
+                    React.createElement('tbody', null,
+                      visits.slice().reverse().map(function(v, i){
+                        var w = workers.find(function(x){ return x.id===v.workerId; });
+                        return React.createElement('tr', {key:v.id, className:(i%2===0?'odd:bg-white':'even:bg-gray-50')},
+                          React.createElement('td', {className:'p-2 whitespace-nowrap'}, new Date(v.timeISO).toLocaleString()),
+                          React.createElement('td', {className:'p-2'}, React.createElement('span', {className:'px-2 py-1 rounded-full text-xs ' + (v.direction==='IN'?'bg-green-100 text-green-800':'bg-red-100 text-red-800')}, v.direction)),
+                          React.createElement('td', {className:'p-2'}, w ? w.name : ''),
+                          React.createElement('td', {className:'p-2'}, w ? w.company : ''),
+                          React.createElement('td', {className:'p-2'}, v.photoDataUrl ? React.createElement('img', {src:v.photoDataUrl, alt:'snap', className:'h-10 w-10 object-cover rounded'}) : '—'),
+                          React.createElement('td', {className:'p-2'}, (v.ppe||[]).join(', ')),
+                          React.createElement('td', {className:'p-2'}, (v.induction? 'Inducted':'—') + ' / ' + (v.rams? 'RAMS':'—'))
+                        );
+                      })
+                    )
+                  )
+                ),
+                React.createElement('div', {className:'flex gap-2 mt-3'},
+                  React.createElement('button', {onClick:exportCSV, className:'px-3 py-2 rounded-xl bg-black text-white'}, 'Export CSV'),
+                  React.createElement('button', {onClick:function(){ if(confirm('Clear ALL local data?')){ localStorage.clear(); location.reload(); } }, className:'px-3 py-2 rounded-xl bg-red-600 text-white'}, 'Reset ALL data')
+                )
+              ),
+              React.createElement(Section, {title:'Admin – Settings'},
+                React.createElement(TextInput, {label:'Site name', value:settings.siteName, onChange:function(v){ setSettings(Object.assign({},settings,{siteName:v})); }}),
+                React.createElement(TextInput, {label:'Admin PIN', value:settings.adminPin, onChange:function(v){ setSettings(Object.assign({},settings,{adminPin:v})); }}),
+                React.createElement('div', {className:'grid grid-cols-1 md:grid-cols-3 gap-4'},
+                  React.createElement('div', {className:'bg-gray-50 rounded-xl p-3'},
+                    React.createElement('h3',{className:'font-medium mb-2'}, 'Mandatory declarations'),
+                    React.createElement(Checkbox, {checked:settings.requireInduction, onChange:function(v){ setSettings(Object.assign({},settings,{requireInduction:v})); }, label:'Induction completed'}),
+                    React.createElement(Checkbox, {checked:settings.requireRAMS, onChange:function(v){ setSettings(Object.assign({},settings,{requireRAMS:v})); }, label:'RAMS reviewed/acknowledged'})
+                  ),
+                  React.createElement('div', {className:'bg-gray-50 rounded-xl p-3'},
+                    React.createElement('h3',{className:'font-medium mb-2'}, 'Required PPE to sign IN'),
+                    PPE_ITEMS.map(function(p){
+                      var checked = settings.requirePPE.indexOf(p.id) !== -1;
+                      return React.createElement(Checkbox, {key:p.id, checked:checked, onChange:function(v){
+                        var next = settings.requirePPE.slice(0);
+                        if(v && next.indexOf(p.id)===-1){ next.push(p.id); }
+                        if(!v){ next = next.filter(function(x){ return x!==p.id; }); }
+                        setSettings(Object.assign({},settings,{requirePPE: next}));
+                      }, label:p.label});
+                    })
+                  ),
+                  React.createElement('div', {className:'bg-gray-50 rounded-xl p-3'},
+                    React.createElement('h3',{className:'font-medium mb-2'}, 'Photo setting'),
+                    React.createElement(Checkbox, {checked:settings.requirePhoto, onChange:function(v){ setSettings(Object.assign({},settings,{requirePhoto:v})); }, label:'Require photo on sign-in'}),
+                    React.createElement('p',{className:'text-xs text-gray-500 mt-1'}, 'If enabled, workers must capture a photo to complete sign-in.')
+                  )
+                )
+              )
+            ) : null
+          )
+        ),
+        React.createElement('footer', {className:'mt-8 text-center text-xs text-gray-500'},
+          React.createElement('p', null, 'Data is stored locally in this browser. Export CSV for backups. © ' + (new Date().getFullYear()) + ' RSK Consultancy – Site Kiosk MVP')
+        )
       );
     }
 
-    const root = ReactDOM.createRoot(document.getElementById('root'));
-    root.render(<App />);
+    var root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(React.createElement(App));
+  })();
   </script>
 </body>
 </html>
