@@ -6,20 +6,17 @@
   <title>Site Sign-In</title>
   <meta name="description" content="Site sign-in/out app">
   <link rel="icon" href="data:,">
-  <!-- Tailwind for quick styling (CDN). For production, switch to prebuilt CSS. -->
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-gray-50">
   <div id="root"></div>
 
-  <!-- Unregister any old service workers (avoid stale caches) -->
   <script>
     if ('serviceWorker' in navigator && navigator.serviceWorker.getRegistrations) {
       navigator.serviceWorker.getRegistrations().then(function(rs){ rs.forEach(function(r){ r.unregister(); }); });
     }
   </script>
 
-  <!-- React (no Babel, no JSX) -->
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 
@@ -55,10 +52,10 @@
     function save(k, v){ localStorage.setItem(k, JSON.stringify(v)); }
 
     function toCSV(rows, headers){
-      function esc(s){ return '\"' + String(s==null?\"\":s).replaceAll('\"','\"\"') + '\"'; }
+      function esc(s){ return '"' + String(s == null ? '' : s).replace(/"/g, '""') + '"'; }
       var head = headers.map(function(h){ return esc(h.label); }).join(',');
-      var body = rows.map(function(r){ return headers.map(function(h){ return esc(h.get(r)); }).join(','); }).join('\\n');
-      return head + '\\n' + body;
+      var body = rows.map(function(r){ return headers.map(function(h){ return esc(h.get(r)); }).join(','); }).join('\n');
+      return head + '\n' + body;
     }
     function download(fn, content){
       var blob = new Blob([content], {type:'text/csv;charset=utf-8;'});
@@ -92,7 +89,7 @@
 
     function TextInput(props){
       return React.createElement('label', {className:'block mb-3'},
-        React.createElement('span', {className:'block text-sm text-gray-700 mb-1'}, props.label, props.required? React.createElement('span',{className:'text-red-500'},' *') : null),
+        React.createElement('span', {className:'block text-sm text-gray-700 mb-1'}, props.label, props.required? React.createElement('span',{className:'text-red-500'}, ' *') : null),
         React.createElement('input', {value:props.value,onChange:function(e){props.onChange(e.target.value);},placeholder:(props.placeholder||''),className:'w-full border rounded-xl px-3 py-2 focus:outline-none focus:ring ' + (props.error?'border-red-500 ring-red-200':'border-gray-300')}),
         props.error ? React.createElement('span',{className:'text-xs text-red-600 mt-1 block'}, props.error) : null
       );
@@ -100,9 +97,9 @@
 
     function Select(props){
       return React.createElement('label', {className:'block mb-3'},
-        React.createElement('span', {className:'block text-sm text-gray-700 mb-1'}, props.label, props.required? React.createElement('span',{className:'text-red-500'},' *') : null),
+        React.createElement('span', {className:'block text-sm text-gray-700 mb-1'}, props.label, props.required? React.createElement('span',{className:'text-red-500'}, ' *') : null),
         React.createElement('select', {value:props.value,onChange:function(e){props.onChange(e.target.value);},className:'w-full border rounded-xl px-3 py-2 ' + (props.error?'border-red-500':'border-gray-300')},
-          props.options.map(function(o){ return React.createElement('option',{key:o.value,value:o.value},o.label); })
+          props.options.map(function(o){ return React.createElement('option',{key:o.value,value:o.value}, o.label); })
         ),
         props.error ? React.createElement('span',{className:'text-xs text-red-600 mt-1 block'}, props.error) : null
       );
