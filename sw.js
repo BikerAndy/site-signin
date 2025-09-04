@@ -1,8 +1,7 @@
-const CACHE = 'site-signin-cache-v3';
+const CACHE = 'site-signin-cache-v3-inline';
 const ASSETS = [
   './',
   './index.html',
-  './app.jsx',
   './manifest.webmanifest',
   './icons/icon-192.png',
   './icons/icon-512.png',
