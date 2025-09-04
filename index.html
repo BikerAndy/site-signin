@@ -4,20 +4,25 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Site Sign-In</title>
-  <!-- For quick deploy: Tailwind CDN; swap to a build later -->
   <script src="https://cdn.tailwindcss.com"></script>
   <meta name="description" content="Site sign-in/out app">
 </head>
 <body class="bg-gray-50">
   <div id="root"></div>
 
-  <!-- React & Babel (dev only). For production, we’ll move to Vite. -->
+  <!-- Kill any old service worker from previous builds -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistrations && navigator.serviceWorker.getRegistrations().then(rs => rs.forEach(r => r.unregister()));
+    }
+  </script>
+
+  <!-- React & Babel (dev only) -->
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-  <!-- NO service worker here (avoids cache issues while you debug Pages) -->
-
+  <!-- App (no backticks anywhere) -->
   <script type="text/babel">
     const { useMemo, useRef, useState, useEffect } = React;
 
@@ -227,13 +232,14 @@
         onVisit(workerId, mode, { ppe, induction, rams, notes, photoDataUrl });
         setExistingId(""); setName(""); setCompany(""); setRole(""); setCscs(""); setPhone(""); setEmail(""); setEmergencyContact(""); setVehicleReg("");
         setPpe([]); setInduction(false); setRams(false); setNotes(""); setAck(false); setPhotoDataUrl(""); setErrors({});
-        alert(\`Successfully signed \${mode==="IN"?"IN":"OUT"}.\`);
+        alert("Successfully signed " + (mode==="IN" ? "IN" : "OUT") + ".");
       }
 
-      const existingOpts=[{value:"",label:"— New person —"}, ...workers.map(w=>({value:w.id,label:\`\${w.name} (\${w.company})\`}))];
+      const existingOpts=[{value:"",label:"— New person —"}]
+        .concat(workers.map(function(w){ return { value:w.id, label: (w.name + " (" + w.company + ")") }; }));
 
       return (
-        <Section title={\`Sign \${mode==="IN"?"IN":"OUT"}\`} right={<Toggle checked={mode==="OUT"} onChange={onModeToggle} />}>
+        <Section title={"Sign " + (mode==="IN" ? "IN" : "OUT")} right={<Toggle checked={mode==="OUT"} onChange={onModeToggle} />}>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <Select label="Existing person" value={existingId} onChange={setExistingId} options={existingOpts} />
             <TextInput label="Full name" value={name} onChange={setName} required error={errors.name||""}/>
@@ -315,7 +321,8 @@
           {label:"PPE",get:r=>(r.ppe||[]).join(";")},
           {label:"Notes",get:r=>r.notes||""},
         ];
-        const csv=toCSV(visits,headers); download(`site-attendance_${new Date().toISOString().slice(0,10)}.csv`,csv);
+        const fn = "site-attendance_" + new Date().toISOString().slice(0,10) + ".csv";
+        const csv=toCSV(visits,headers); download(fn,csv);
       }
       function resetAll(){ if(!confirm("This will clear ALL local data (workers & visits). Continue?")) return; setWorkers([]); setVisits([]); }
 
@@ -435,4 +442,3 @@
   </script>
 </body>
 </html>
-
