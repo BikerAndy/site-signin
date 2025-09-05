@@ -6,7 +6,7 @@
   <title>Site Sign-In</title>
   <meta name="description" content="Site sign-in/out app">
   <link rel="icon" href="data:,">
-  <!-- Tailwind (OK for quick deploy; compile for production) -->
+  <!-- Tailwind (fine for quick deploys; for production, compile it) -->
   <script src="https://cdn.tailwindcss.com"></script>
 
   <style>
@@ -56,9 +56,11 @@
     var KEY_WORKERS="siteSignIn.workers";
     var KEY_VISITS="siteSignIn.visits";
     var KEY_SETTINGS="siteSignIn.settings";
+    var KEY_PERSON_SITE="siteSignIn.personSite"; // map personId::siteId -> { induction: true, rams: true }
 
     var defaultSettings = {
       siteName: "Selfridges – Concession Works",
+      siteId: "",             // will be generated on first load
       adminPin: "1234",
       requireInduction: true,
       requireRAMS: true,
@@ -302,8 +304,59 @@
       );
     }
 
+    function AdminPeople(props){
+      var workers = props.workers, visits = props.visits, isInductionDone = props.isInductionDone, isRAMSDone = props.isRAMSDone, onShowHistory = props.onShowHistory;
+      if(workers.length===0) return React.createElement('p',{className:'text-sm text-gray-500'}, 'No saved people yet.');
+      return React.createElement('div', {className:'space-y-2'},
+        workers.map(function(w){
+          var last = visits.filter(function(v){return v.workerId===w.id;}).slice(-1)[0] || null;
+          var onSite = last && last.direction==='IN';
+          return React.createElement('div', {key:w.id, className:'flex items-center justify-between border rounded-xl p-3'},
+            React.createElement('div', null,
+              React.createElement('div', {className:'font-medium'}, w.name + (w.company ? ' · ' + w.company : '')),
+              React.createElement('div', {className:'text-xs text-gray-500'}, onSite ? 'On site' : 'Last: ' + (last ? (last.direction + ' ' + new Date(last.timeISO).toLocaleString()) : 'n/a')),
+              React.createElement('div', {className:'text-xs'}, 'Induction: ' + (isInductionDone(w.id) ? 'Yes' : 'No') + ' · RAMS: ' + (isRAMSDone(w.id) ? 'Yes' : 'No'))
+            ),
+            React.createElement('div', {className:'flex items-center gap-2'},
+              React.createElement('button', {className:'text-sm underline', onClick:function(){ onShowHistory(w.id); }}, 'View history')
+            )
+          );
+        })
+      );
+    }
+
+    function HistoryModal(props){
+      var onClose=props.onClose, person=props.person, rows=props.rows;
+      if(!person) return null;
+      return React.createElement('div', {className:'fixed inset-0 bg-black/40 flex items-center justify-center z-50'},
+        React.createElement('div', {className:'bg-white rounded-2xl shadow max-w-2xl w-full p-5'},
+          React.createElement('div', {className:'flex items-center justify-between mb-3'},
+            React.createElement('h3', {className:'text-lg font-semibold'}, 'History — ' + person.name + (person.company ? ' (' + person.company + ')' : '')),
+            React.createElement('button', {className:'px-3 py-1 bg-gray-200 rounded-xl', onClick:onClose}, 'Close')
+          ),
+          rows.length===0 ? React.createElement('p', {className:'text-sm text-gray-500'}, 'No visits yet.') :
+          React.createElement('ul', {className:'space-y-2 max-h-[60vh] overflow-auto'},
+            rows.map(function(r){
+              return React.createElement('li', {key:r.id, className:'flex items-center gap-3 border rounded-xl p-3'},
+                r.photoDataUrl ? React.createElement('img', {src:r.photoDataUrl, alt:'photo', className:'w-16 h-16 object-cover rounded-lg border'}) :
+                  React.createElement('div', {className:'w-16 h-16 rounded-lg border bg-gray-100 flex items-center justify-center text-xs text-gray-500'}, 'No photo'),
+                React.createElement('div', null,
+                  React.createElement('div', {className:'font-medium'}, r.direction + ' · ' + new Date(r.timeISO).toLocaleString()),
+                  React.createElement('div', {className:'text-xs text-gray-500'}, 'PPE: ' + ((r.ppe||[]).join('; ') || '—'))
+                )
+              );
+            })
+          )
+        )
+      );
+    }
+
     function SignForm(props){
       var mode=props.mode, settings=props.settings, onUpsert=props.onUpsert, onVisit=props.onVisit, workers=props.workers, onModeToggle=props.onModeToggle, lastByWorker=props.lastByWorker;
+      var isInductionDone = props.isInductionDone || function(){return false;};
+      var isRAMSDone = props.isRAMSDone || function(){return false;};
+      var onSetPersonSite = props.onSetPersonSite || function(){};
+
       var _a = useState(''), existingId=_a[0], setExistingId=_a[1];
       var _b = useState(''), name=_b[0], setName=_b[1];
       var _c = useState(''), company=_c[0], setCompany=_c[1];
@@ -332,49 +385,48 @@
 
       function togglePPE(id){ setPpe(function(prev){ return prev.includes(id) ? prev.filter(function(x){return x!==id;}) : prev.concat([id]); }); }
 
-function validate(){
-  var e = {};
-  if(mode === 'OUT'){
-    if(!existingId) e.existingId = 'Select a person to sign out';
-    var lastOut = existingId ? (lastByWorker && lastByWorker.get(existingId)) : null;
-    if(!lastOut || lastOut.direction !== 'IN') e.notOnSite = true;
-  } else {
-    // Required fields when signing IN
-    if(!name.trim()) e.name = 'Name is required';
-    if(!company.trim()) e.company = 'Company is required';
-    if(settings.requireInduction && !induction) e.induction = true;
-    if(settings.requireRAMS && !rams) e.rams = true;
-    var missing = (settings.requirePPE||[]).filter(function(id){ return !ppe.includes(id); });
-    if(missing.length) e.ppe = missing;
-    if(settings.requirePhoto && !photoDataUrl) e.photo = true;
-    if(!ack) e.ack = true;
+      var existingHasInduction = existingId ? isInductionDone(existingId) : false;
+      var existingHasRAMS = existingId ? isRAMSDone(existingId) : false;
 
-    // Block duplicate IN for the same record
-    if(existingId){
-      var lastInForExisting = lastByWorker && lastByWorker.get(existingId);
-      if(lastInForExisting && lastInForExisting.direction === 'IN'){
-        e.existingId = 'Selected person is already signed IN';
-      }
-    } else {
-      // If creating a "new person", check by name+company to stop dupes already IN
-      var nm = name.trim().toLowerCase();
-      var co = (company||'').trim().toLowerCase();
-      var cand = workers.find(function(w){
-        return (w.name||'').trim().toLowerCase() === nm &&
-               (w.company||'').trim().toLowerCase() === co;
-      });
-      if(cand){
-        var lastCand = lastByWorker && lastByWorker.get(cand.id);
-        if(lastCand && lastCand.direction === 'IN'){
-          e.name = 'This person is already signed IN — choose them in "Existing person".';
+      function validate(){
+        var e = {};
+        if(mode==='OUT'){
+          if(!existingId) e.existingId = 'Select a person to sign out';
+          var lastOut = existingId ? (lastByWorker && lastByWorker.get(existingId)) : null;
+          if(!lastOut || lastOut.direction!=='IN') e.notOnSite = true;
+        } else {
+          if(!name.trim()) e.name='Name is required';
+          if(!company.trim()) e.company='Company is required';
+          if(settings.requireInduction && !induction && !existingHasInduction) e.induction = true;
+          if(settings.requireRAMS && !rams && !existingHasRAMS) e.rams = true;
+          var missing = (settings.requirePPE||[]).filter(function(id){ return !ppe.includes(id); });
+          if(missing.length) e.ppe = missing;
+          if(settings.requirePhoto && !photoDataUrl) e.photo = true;
+          if(!ack) e.ack = true;
+
+          // Block duplicate IN for same record
+          if(existingId){
+            var lastInForExisting = lastByWorker && lastByWorker.get(existingId);
+            if(lastInForExisting && lastInForExisting.direction === 'IN'){ e.existingId = 'Selected person is already signed IN'; }
+          } else {
+            // Prevent new person duplicate IN by name+company
+            var nm = name.trim().toLowerCase();
+            var co = (company||'').trim().toLowerCase();
+            var cand = workers.find(function(w){
+              return (w.name||'').trim().toLowerCase() === nm &&
+                     (w.company||'').trim().toLowerCase() === co;
+            });
+            if(cand){
+              var lastCand = lastByWorker && lastByWorker.get(cand.id);
+              if(lastCand && lastCand.direction === 'IN'){
+                e.name = 'This person is already signed IN — choose them in "Existing person".';
+              }
+            }
+          }
         }
+        setErrors(e);
+        return Object.keys(e).length===0;
       }
-    }
-  }
-  setErrors(e);
-  return Object.keys(e).length === 0;
-}
-
 
       function submit(){
         if(!validate()){ alert('Please fix the highlighted fields first.'); return; }
@@ -382,10 +434,16 @@ function validate(){
         var profile = { id:workerId, name:name, company:company, role:role, cscs:cscs, phone:phone, email:email, emergencyContact:emergencyContact, vehicleReg:vehicleReg };
         onUpsert(profile);
 
-        // Store photo with EVERY entry (IN/OUT) if a photo was taken this time.
         onVisit(workerId, mode, { ppe:ppe, induction:induction, rams:rams, notes:notes, photoDataUrl:photoDataUrl });
 
-        // Reset form
+        // Persist one-time flags (per site) when confirmed
+        if(mode==='IN'){
+          var flagsToSet = {};
+          if(induction) flagsToSet.induction = true;
+          if(rams) flagsToSet.rams = true;
+          if(Object.keys(flagsToSet).length){ onSetPersonSite(workerId, flagsToSet); }
+        }
+
         setExistingId(''); setName(''); setCompany(''); setRole(''); setCscs(''); setPhone(''); setEmail(''); setEmergencyContact(''); setVehicleReg('');
         setPpe([]); setInduction(false); setRams(false); setNotes(''); setAck(false); setPhotoDataUrl(''); setErrors({});
         alert('Successfully signed ' + (mode==='IN' ? 'IN' : 'OUT') + '.');
@@ -416,8 +474,12 @@ function validate(){
           ),
           React.createElement('div', {className:'bg-gray-50 rounded-xl p-4'},
             React.createElement('h3',{className:'font-medium mb-2'}, 'Declarations'),
-            React.createElement(Checkbox,{checked:induction,onChange:setInduction,label:'I have completed the site induction',error:!!errors.induction}),
-            React.createElement(Checkbox,{checked:rams,onChange:setRams,label:'I have read and understood applicable RAMS',error:!!errors.rams}),
+            (existingHasInduction && existingHasRAMS)
+              ? React.createElement('p',{className:'text-sm text-gray-600'}, 'Induction and RAMS already recorded for this site.')
+              : React.createElement(React.Fragment, null,
+                  React.createElement(Checkbox,{checked:induction,onChange:setInduction,label:'I have completed the site induction',error:!!errors.induction}),
+                  React.createElement(Checkbox,{checked:rams,onChange:setRams,label:'I have read and understood applicable RAMS',error:!!errors.rams})
+                ),
             React.createElement(Checkbox,{checked:ack,onChange:setAck,label:'I understand site rules and emergency procedures',error:!!errors.ack})
           ),
           React.createElement('div', null,
@@ -471,134 +533,4 @@ function validate(){
       var _b = useState(function(){ return load(KEY_WORKERS,[]); }), workers=_b[0], setWorkers=_b[1];
       var _c = useState(function(){ return load(KEY_VISITS,[]); }), visits=_c[0], setVisits=_c[1];
       var _d = useState(false), admin=_d[0], setAdmin=_d[1];
-      var _e = useState(''), pinInput=_e[0], setPinInput=_e[1];
-      var _f = useState('IN'), mode=_f[0], setMode=_f[1];
-      var _g = useState(''), search=_g[0], setSearch=_g[1];
-
-      useEffect(function(){ save(KEY_SETTINGS, settings); }, [settings]);
-      useEffect(function(){ save(KEY_WORKERS, workers); }, [workers]);
-      useEffect(function(){ save(KEY_VISITS, visits); }, [visits]);
-
-      var lastByWorker = useMemo(function(){
-        var map = new Map();
-        for(var i=0;i<visits.length;i++){ var v=visits[i]; map.set(v.workerId, v); }
-        return map;
-      }, [visits]);
-
-      var activeWorkers = workers.filter(function(w){ var last = lastByWorker.get(w.id); return last && last.direction==='IN'; });
-
-      function upsertWorker(profile){
-        setWorkers(function(prev){
-          var i = prev.findIndex(function(p){ return p.id===profile.id; });
-          if(i===-1) return prev.concat([profile]);
-          var copy = prev.slice(0); copy[i]=profile; return copy;
-        });
-      }
-
-function recordVisit(workerId, direction, payload){
-  if(direction === 'OUT'){
-    var last = lastByWorker.get(workerId);
-    if(!last || last.direction !== 'IN'){
-      alert('Cannot sign out someone who is not currently signed in.');
-      return;
-    }
-  }
-  // Extra guard: prevent duplicate INs at state level
-  if(direction === 'IN'){
-    var lastIn = lastByWorker.get(workerId);
-    if(lastIn && lastIn.direction === 'IN'){
-      alert('This person is already signed in. Sign them OUT first.');
-      return;
-    }
-  }
-  var visit = { id:uuid(), workerId:workerId, direction:direction, timeISO:nowISO() };
-  for(var k in payload){ if(Object.prototype.hasOwnProperty.call(payload,k)){ visit[k]=payload[k]; } }
-  setVisits(function(v){ return v.concat([visit]); });
-}
-
-
-      function exportCSV(){
-        var headers=[
-          {label:'Timestamp',get:function(r){return r.timeISO;}},
-          {label:'Direction',get:function(r){return r.direction;}},
-          {label:'Name',get:function(r){ var w=workers.find(function(x){return x.id===r.workerId;}); return w? w.name : ''; }},
-          {label:'Company',get:function(r){ var w=workers.find(function(x){return x.id===r.workerId;}); return w? w.company : ''; }},
-          {label:'Role',get:function(r){ var w=workers.find(function(x){return x.id===r.workerId;}); return w? w.role : ''; }},
-          {label:'CSCS',get:function(r){ var w=workers.find(function(x){return x.id===r.workerId;}); return w? w.cscs : ''; }},
-          {label:'Phone',get:function(r){ var w=workers.find(function(x){return x.id===r.workerId;}); return w? w.phone : ''; }},
-          {label:'Induction',get:function(r){ return r.induction ? 'Yes' : 'No'; }},
-          {label:'RAMS Ack',get:function(r){ return r.rams ? 'Yes' : 'No'; }},
-          {label:'PPE',get:function(r){ return (r.ppe||[]).join(';'); }},
-          {label:'Notes',get:function(r){ return r.notes || ''; }}
-          // intentionally not exporting photos in CSV
-        ];
-        var fn = 'site-attendance_' + new Date().toISOString().slice(0,10) + '.csv';
-        var csv = toCSV(visits, headers); download(fn, csv);
-      }
-
-      // Build rows for print-only tick sheet
-      var printRows = useMemo(function(){
-        return activeWorkers.map(function(w){
-          return {
-            id: w.id,
-            name: w.name,
-            company: w.company,
-            timeIn: getLastIn(visits, w.id)
-          };
-        });
-      }, [activeWorkers, visits]);
-
-      return React.createElement(React.Fragment, null,
-        /* PRINT-ONLY TICK SHEET */
-        React.createElement('div', {className:'print-only p-6'},
-          React.createElement(PrintSheet, {siteName:settings.siteName, rows:printRows})
-        ),
-
-        /* APP UI (hidden in print) */
-        React.createElement('div', {className:'no-print min-h-screen bg-gray-50 p-4 md:p-8'},
-          React.createElement('header', {className:'mb-6 flex items-center justify-between'},
-            React.createElement('div', null,
-              React.createElement('h1', {className:'text-2xl md:text-3xl font-bold'}, settings.siteName),
-              React.createElement('p', {className:'text-sm text-gray-600'}, 'Site Sign-In / Sign-Out (Offline-ready)')
-            ),
-            React.createElement('div', {className:'flex items-center gap-3'},
-              React.createElement(Toggle, {checked:mode==='OUT', onChange:function(c){ setMode(c?'OUT':'IN'); }}),
-              !admin ? React.createElement('div',{className:'flex items-center gap-2'},
-                React.createElement('input',{value:pinInput,onChange:function(e){setPinInput(e.target.value);},placeholder:'Admin PIN',className:'w-28 border rounded-xl px-3 py-1'}),
-                React.createElement('button',{onClick:function(){ setAdmin(pinInput===settings.adminPin); },className:'px-3 py-2 rounded-xl bg-black text-white'},'Admin')
-              ) : React.createElement('button',{onClick:function(){ setAdmin(false); },className:'px-3 py-2 rounded-xl bg-gray-800 text-white'},'Exit Admin')
-            )
-          ),
-          React.createElement('div', {className:'grid grid-cols-1 lg:grid-cols-3 gap-6'},
-            React.createElement('div', {className:'lg:col-span-2'},
-              React.createElement(SignForm, {mode:mode, settings:settings, onUpsert:upsertWorker, onVisit:recordVisit, workers:workers, onModeToggle:function(){ setMode(mode==='IN'?'OUT':'IN'); }, lastByWorker:lastByWorker })
-            ),
-            React.createElement('div', {className:'lg:col-span-1'},
-              React.createElement(Section, {title:'On-site right now', right: React.createElement('div', {className:'flex items-center gap-2'},
-                  React.createElement('button',{onClick:exportCSV,className:'text-sm bg-black text-white px-3 py-2 rounded-xl'}, 'Export CSV'),
-                  React.createElement('button', {onClick:function(){ window.print(); }, className:'text-sm bg-amber-500 text-white px-3 py-2 rounded-xl'}, 'Fire Roll Call (Print)')
-                )},
-                React.createElement('div', {className:'flex items-center gap-2 mb-2'},
-                  React.createElement('input',{value:search,onChange:function(e){setSearch(e.target.value);},placeholder:'Search name/company',className:'w-full border rounded-xl px-3 py-2'}),
-                  React.createElement('button',{onClick:function(){ setSearch(''); },className:'text-sm underline'},'Clear')
-                ),
-                React.createElement(RosterList, {people: workers.filter(function(w){ var last = lastByWorker.get(w.id); return last && last.direction==='IN' && (w.name + ' ' + w.company).toLowerCase().includes(search.toLowerCase()); }), visits:visits})
-              ),
-              admin ? React.createElement(Section, {title:'Admin: Recent entries'},
-                React.createElement(AdminVisits, {visits:visits, workers:workers})
-              ) : null
-            )
-          ),
-          React.createElement('footer', {className:'mt-8 text-center text-xs text-gray-500'},
-            React.createElement('p', null, 'Data is stored locally in this browser. Export CSV for backups. © ' + (new Date().getFullYear()) + ' RSK Consultancy – Site Kiosk MVP')
-          )
-        )
-      );
-    }
-
-    var root = ReactDOM.createRoot(document.getElementById('root'));
-    root.render(React.createElement(App));
-  })();
-  </script>
-</body>
-</html>
+      var _e = useState(''), pi_
