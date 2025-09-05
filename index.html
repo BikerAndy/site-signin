@@ -6,17 +6,20 @@
   <title>Site Sign-In</title>
   <meta name="description" content="Site sign-in/out app">
   <link rel="icon" href="data:,">
+  <!-- Tailwind (fine for quick deploys; for production, compile it) -->
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-gray-50">
   <div id="root"></div>
 
+  <!-- Unregister any old service worker to avoid stale files -->
   <script>
     if ('serviceWorker' in navigator && navigator.serviceWorker.getRegistrations) {
       navigator.serviceWorker.getRegistrations().then(function(rs){ rs.forEach(function(r){ r.unregister(); }); });
     }
   </script>
 
+  <!-- React 18 UMD -->
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 
@@ -112,7 +115,7 @@
       );
     }
 
-    // Camera (robust: front preferred, fallbacks + error details)
+    // Camera (always render <video> so ref is never null)
     function CameraCapture(props){
       var value = props.value, onChange = props.onChange;
       var _a = useState(false), active=_a[0], setActive=_a[1];
@@ -122,17 +125,35 @@
       var videoRef = useRef(null);
       var streamRef = useRef(null);
 
+      function ensureVideoReady(v){
+        if(!v) return;
+        v.muted = true;
+        v.setAttribute('playsinline','');
+        v.setAttribute('autoplay','');
+        v.onloadedmetadata = function(){
+          try{ v.play(); }catch(_){}
+        };
+      }
+
       function attach(stream){
-        streamRef.current = stream;
         var v = videoRef.current;
+        if(!v){
+          requestAnimationFrame(function(){ attach(stream); });
+          return;
+        }
+        streamRef.current = stream;
         v.srcObject = stream;
-        v.muted = true; v.playsInline = true; v.setAttribute('playsinline','');
-        v.autoplay = true; v.setAttribute('autoplay','');
-        var pr = v.play();
-        if(pr && pr.catch){ pr.catch(function(){}); }
+        ensureVideoReady(v);
         setActive(true);
       }
-      function stop(){ if(streamRef.current){ streamRef.current.getTracks().forEach(function(t){t.stop();}); streamRef.current=null; } setActive(false); }
+
+      function stop(){
+        if(streamRef.current){
+          streamRef.current.getTracks().forEach(function(t){ t.stop(); });
+          streamRef.current = null;
+        }
+        setActive(false);
+      }
 
       function pickFrontDevice(devs){
         var cams = devs.filter(function(d){ return d.kind==='videoinput'; });
@@ -156,7 +177,6 @@
           return;
         }
         try{
-          // Try front camera by facingMode ideal
           var s = await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'user'}}, audio:false});
           attach(s);
           var devs1 = await enumerateAfterPermission();
@@ -164,7 +184,6 @@
           setCurrentDeviceId(front1 ? front1.deviceId : null);
           return;
         }catch(e1){
-          // Fallback: generic camera, then switch to labeled front if available
           try{
             var s2 = await navigator.mediaDevices.getUserMedia({video:true, audio:false});
             var devs2 = await enumerateAfterPermission();
@@ -200,33 +219,31 @@
 
       return React.createElement('div', {className:'bg-gray-50 rounded-xl p-4'},
         React.createElement('h3', {className:'font-medium mb-2'}, 'Photo'),
-        value ? React.createElement('div', {className:'space-y-2'},
+        React.createElement('video', {ref:videoRef, className:'rounded-xl border w-full ' + (active?'':'hidden'), playsInline:true, muted:true, autoPlay:true}),
+        value && !active ? React.createElement('div', {className:'space-y-2 mt-2'},
           React.createElement('img', {src:value, alt:'Captured', className:'rounded-xl border max-h-48'}),
           React.createElement('div', {className:'flex gap-2'},
             React.createElement('button', {onClick:function(){onChange('');}, className:'px-3 py-2 rounded-xl bg-gray-200'}, 'Remove'),
             React.createElement('button', {onClick:start, className:'px-3 py-2 rounded-xl bg-black text-white'}, 'Retake')
           )
-        )
-        : active ? React.createElement('div', {className:'space-y-2'},
-          React.createElement('video', {ref:videoRef, className:'rounded-xl border w-full', playsInline:true, muted:true, autoPlay:true}),
-          React.createElement('div', {className:'flex gap-2'},
-            React.createElement('button', {onClick:function(){ 
-              if(!videoRef.current) return;
-              var v=videoRef.current, c=document.createElement('canvas');
-              var w=640, h=Math.round((v.videoHeight/v.videoWidth)*640)||480;
-              c.width=w; c.height=h; c.getContext('2d').drawImage(v,0,0,w,h);
-              onChange(c.toDataURL('image/jpeg',0.85)); 
-              stop();
-            }, className:'px-3 py-2 rounded-xl bg-green-600 text-white'}, 'Take photo'),
-            React.createElement('button', {onClick:stop, className:'px-3 py-2 rounded-xl bg-gray-200'}, 'Cancel'),
-            React.createElement('button', {onClick:switchCamera, className:'px-3 py-2 rounded-xl bg-gray-200'}, 'Switch camera')
-          )
-        )
-        : React.createElement('div', {className:'space-y-2'},
+        ) : null,
+        (!value && active) ? React.createElement('div', {className:'flex gap-2 mt-2'},
+          React.createElement('button', {onClick:function(){
+            if(!videoRef.current) return;
+            var v=videoRef.current, c=document.createElement('canvas');
+            var w=640, h=Math.round((v.videoHeight/v.videoWidth)*640)||480;
+            c.width=w; c.height=h; c.getContext('2d').drawImage(v,0,0,w,h);
+            onChange(c.toDataURL('image/jpeg',0.85));
+            stop();
+          }, className:'px-3 py-2 rounded-xl bg-green-600 text-white'}, 'Take photo'),
+          React.createElement('button', {onClick:stop, className:'px-3 py-2 rounded-xl bg-gray-200'}, 'Cancel'),
+          React.createElement('button', {onClick:switchCamera, className:'px-3 py-2 rounded-xl bg-gray-200'}, 'Switch camera')
+        ) : null,
+        (!value && !active) ? React.createElement('div', {className:'space-y-2'},
           error? React.createElement('p',{className:'text-sm text-red-600'}, error) : React.createElement('p',{className:'text-xs text-gray-500'}, 'You may need to allow camera permissions and use HTTPS.'),
           React.createElement('button', {onClick:start, className:'px-3 py-2 rounded-xl bg-black text-white'}, 'Open camera'),
           React.createElement('p', {className:'text-xs text-gray-500'}, 'Prefers the front camera; use "Switch camera" if needed.')
-        )
+        ) : null
       );
     }
 
