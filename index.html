@@ -6,13 +6,28 @@
   <title>Site Sign-In</title>
   <meta name="description" content="Site sign-in/out app">
   <link rel="icon" href="data:,">
-  <!-- Tailwind (fine for quick deploys; for production, compile it) -->
+  <!-- Tailwind (OK for quick deploy; compile for production) -->
   <script src="https://cdn.tailwindcss.com"></script>
+
+  <style>
+    /* Print just the Fire Roll Call tick sheet */
+    .print-only { display: none; }
+    @media print {
+      .no-print { display: none !important; }
+      .print-only { display: block !important; }
+      body { background: #fff; }
+    }
+    .print-sheet table { width: 100%; border-collapse: collapse; }
+    .print-sheet th, .print-sheet td { border: 1px solid #000; padding: 8px; text-align: left; }
+    .print-sheet .box { width: 18px; height: 18px; border: 1px solid #000; display: inline-block; }
+    .print-sheet h1 { font-size: 20px; margin: 0 0 8px 0; }
+    .print-sheet p { margin: 0 0 12px 0; }
+  </style>
 </head>
 <body class="bg-gray-50">
   <div id="root"></div>
 
-  <!-- Unregister any old service worker to avoid stale files -->
+  <!-- Unregister any old service worker to avoid stale cache -->
   <script>
     if ('serviceWorker' in navigator && navigator.serviceWorker.getRegistrations) {
       navigator.serviceWorker.getRegistrations().then(function(rs){ rs.forEach(function(r){ r.unregister(); }); });
@@ -137,10 +152,7 @@
 
       function attach(stream){
         var v = videoRef.current;
-        if(!v){
-          requestAnimationFrame(function(){ attach(stream); });
-          return;
-        }
+        if(!v){ requestAnimationFrame(function(){ attach(stream); }); return; }
         streamRef.current = stream;
         v.srcObject = stream;
         ensureVideoReady(v);
@@ -270,6 +282,26 @@
       );
     }
 
+    function AdminVisits(props){
+      var visits = props.visits, workers = props.workers;
+      var rows = visits.slice().reverse().slice(0, 50);
+      if(rows.length===0) return React.createElement('p',{className:'text-sm text-gray-500'}, 'No entries yet.');
+      return React.createElement('div', {className:'space-y-3'},
+        rows.map(function(r){
+          var w = workers.find(function(x){return x.id===r.workerId;});
+          return React.createElement('div', {key:r.id, className:'flex items-center gap-3 border rounded-xl p-3'},
+            r.photoDataUrl ? React.createElement('img', {src:r.photoDataUrl, alt:'photo', className:'w-20 h-20 object-cover rounded-lg border'}) :
+              React.createElement('div', {className:'w-20 h-20 rounded-lg border bg-gray-100 flex items-center justify-center text-xs text-gray-500'}, 'No photo'),
+            React.createElement('div', {className:'flex-1'},
+              React.createElement('div', {className:'font-medium'}, (w?w.name:'') + ' · ' + (w?w.company:'')),
+              React.createElement('div', {className:'text-xs text-gray-600'}, r.direction + ' · ' + new Date(r.timeISO).toLocaleString()),
+              React.createElement('div', {className:'text-xs text-gray-500'}, (w && w.role) ? w.role : '')
+            )
+          );
+        })
+      );
+    }
+
     function SignForm(props){
       var mode=props.mode, settings=props.settings, onUpsert=props.onUpsert, onVisit=props.onVisit, workers=props.workers, onModeToggle=props.onModeToggle, lastByWorker=props.lastByWorker;
       var _a = useState(''), existingId=_a[0], setExistingId=_a[1];
@@ -325,7 +357,11 @@
         var workerId = existingId || uuid();
         var profile = { id:workerId, name:name, company:company, role:role, cscs:cscs, phone:phone, email:email, emergencyContact:emergencyContact, vehicleReg:vehicleReg };
         onUpsert(profile);
+
+        // Store photo with EVERY entry (IN/OUT) if a photo was taken this time.
         onVisit(workerId, mode, { ppe:ppe, induction:induction, rams:rams, notes:notes, photoDataUrl:photoDataUrl });
+
+        // Reset form
         setExistingId(''); setName(''); setCompany(''); setRole(''); setCscs(''); setPhone(''); setEmail(''); setEmergencyContact(''); setVehicleReg('');
         setPpe([]); setInduction(false); setRams(false); setNotes(''); setAck(false); setPhotoDataUrl(''); setErrors({});
         alert('Successfully signed ' + (mode==='IN' ? 'IN' : 'OUT') + '.');
@@ -364,10 +400,44 @@
             React.createElement(CameraCapture, {value:photoDataUrl, onChange:setPhotoDataUrl}),
             errors.photo ? React.createElement('p', {className:'text-xs text-red-600 mt-1'}, 'Photo is required') : null
           )
-        ) : null,
+        ) : React.createElement('div', {className:'mt-2'},
+            React.createElement('p', {className:'text-xs text-gray-500'}, 'Optional: take a photo before signing out (Admin can view later).'),
+            React.createElement(CameraCapture, {value:photoDataUrl, onChange:setPhotoDataUrl})
+        ),
         React.createElement('div', {className:'mt-4 flex flex-col md:flex-row gap-3'},
           React.createElement('button', {onClick:submit, className:'px-4 py-3 rounded-xl text-white font-semibold ' + (mode==='IN'?'bg-green-600':'bg-red-600')}, 'Sign ' + (mode==='IN'?'IN':'OUT')),
           React.createElement('button', {onClick:function(){ setExistingId(''); setName(''); setCompany(''); setRole(''); setCscs(''); setPhone(''); setEmail(''); setEmergencyContact(''); setVehicleReg(''); setPpe([]); setInduction(false); setRams(false); setNotes(''); setAck(false); setPhotoDataUrl(''); setErrors({}); }, className:'px-4 py-3 rounded-xl bg-gray-200'}, 'Clear')
+        )
+      );
+    }
+
+    function PrintSheet(props){
+      var siteName = props.siteName, rows = props.rows;
+      var now = new Date();
+      return React.createElement('div', {className:'print-sheet'},
+        React.createElement('h1', null, 'FIRE ROLL CALL — ' + siteName),
+        React.createElement('p', null, now.toLocaleString()),
+        React.createElement('table', null,
+          React.createElement('thead', null,
+            React.createElement('tr', null,
+              React.createElement('th', null, '#'),
+              React.createElement('th', null, 'Name'),
+              React.createElement('th', null, 'Company'),
+              React.createElement('th', null, 'Time IN'),
+              React.createElement('th', null, 'Tick')
+            )
+          ),
+          React.createElement('tbody', null,
+            rows.map(function(r, i){
+              return React.createElement('tr', {key:r.id},
+                React.createElement('td', null, String(i+1)),
+                React.createElement('td', null, r.name),
+                React.createElement('td', null, r.company || ''),
+                React.createElement('td', null, r.timeIn ? new Date(r.timeIn).toLocaleTimeString() : ''),
+                React.createElement('td', null, React.createElement('span', {className:'box'}))
+              );
+            })
+          )
         )
       );
     }
@@ -402,6 +472,7 @@
       }
 
       function recordVisit(workerId, direction, payload){
+        // Prevent signing out if not currently IN
         if(direction==='OUT'){
           var last = lastByWorker.get(workerId);
           if(!last || last.direction!=='IN'){
@@ -410,6 +481,7 @@
           }
         }
         var visit = { id:uuid(), workerId:workerId, direction:direction, timeISO:nowISO() };
+        // include photoDataUrl (and other fields) on every entry if provided
         for(var k in payload){ if(Object.prototype.hasOwnProperty.call(payload,k)){ visit[k]=payload[k]; } }
         setVisits(function(v){ return v.concat([visit]); });
       }
@@ -427,42 +499,68 @@
           {label:'RAMS Ack',get:function(r){ return r.rams ? 'Yes' : 'No'; }},
           {label:'PPE',get:function(r){ return (r.ppe||[]).join(';'); }},
           {label:'Notes',get:function(r){ return r.notes || ''; }}
+          // intentionally not exporting photos in CSV
         ];
         var fn = 'site-attendance_' + new Date().toISOString().slice(0,10) + '.csv';
         var csv = toCSV(visits, headers); download(fn, csv);
       }
 
-      return React.createElement('div', {className:'min-h-screen bg-gray-50 p-4 md:p-8'},
-        React.createElement('header', {className:'mb-6 flex items-center justify-between'},
-          React.createElement('div', null,
-            React.createElement('h1', {className:'text-2xl md:text-3xl font-bold'}, settings.siteName),
-            React.createElement('p', {className:'text-sm text-gray-600'}, 'Site Sign-In / Sign-Out (Offline-ready)')
-          ),
-          React.createElement('div', {className:'flex items-center gap-3'},
-            React.createElement(Toggle, {checked:mode==='OUT', onChange:function(c){ setMode(c?'OUT':'IN'); }}),
-            !admin ? React.createElement('div',{className:'flex items-center gap-2'},
-              React.createElement('input',{value:pinInput,onChange:function(e){setPinInput(e.target.value);},placeholder:'Admin PIN',className:'w-28 border rounded-xl px-3 py-1'}),
-              React.createElement('button',{onClick:function(){ setAdmin(pinInput===settings.adminPin); },className:'px-3 py-2 rounded-xl bg-black text-white'},'Admin')
-            ) : React.createElement('button',{onClick:function(){ setAdmin(false); },className:'px-3 py-2 rounded-xl bg-gray-800 text-white'},'Exit Admin')
-          )
+      // Build rows for print-only tick sheet
+      var printRows = useMemo(function(){
+        return activeWorkers.map(function(w){
+          return {
+            id: w.id,
+            name: w.name,
+            company: w.company,
+            timeIn: getLastIn(visits, w.id)
+          };
+        });
+      }, [activeWorkers, visits]);
+
+      return React.createElement(React.Fragment, null,
+        /* PRINT-ONLY TICK SHEET */
+        React.createElement('div', {className:'print-only p-6'},
+          React.createElement(PrintSheet, {siteName:settings.siteName, rows:printRows})
         ),
-        React.createElement('div', {className:'grid grid-cols-1 lg:grid-cols-3 gap-6'},
-          React.createElement('div', {className:'lg:col-span-2'},
-            React.createElement(SignForm, {mode:mode, settings:settings, onUpsert:upsertWorker, onVisit:recordVisit, workers:workers, onModeToggle:function(){ setMode(mode==='IN'?'OUT':'IN'); }, lastByWorker:lastByWorker })
-          ),
-          React.createElement('div', {className:'lg:col-span-1'},
-            React.createElement(Section, {title:'On-site right now', right: React.createElement('button',{onClick:exportCSV,className:'text-sm bg-black text-white px-3 py-2 rounded-xl'}, 'Export CSV')},
-              React.createElement('div', {className:'flex items-center gap-2 mb-2'},
-                React.createElement('input',{value:search,onChange:function(e){setSearch(e.target.value);},placeholder:'Search name/company',className:'w-full border rounded-xl px-3 py-2'}),
-                React.createElement('button',{onClick:function(){ setSearch(''); },className:'text-sm underline'},'Clear')
-              ),
-              React.createElement(RosterList, {people: workers.filter(function(w){ var last = lastByWorker.get(w.id); return last && last.direction==='IN' && (w.name + ' ' + w.company).toLowerCase().includes(search.toLowerCase()); }), visits:visits}),
-              React.createElement('button', {onClick:function(){ window.print(); }, className:'mt-3 w-full bg-amber-500 text-white px-3 py-3 rounded-xl font-semibold'}, 'Fire Roll Call (Print)')
+
+        /* APP UI (hidden in print) */
+        React.createElement('div', {className:'no-print min-h-screen bg-gray-50 p-4 md:p-8'},
+          React.createElement('header', {className:'mb-6 flex items-center justify-between'},
+            React.createElement('div', null,
+              React.createElement('h1', {className:'text-2xl md:text-3xl font-bold'}, settings.siteName),
+              React.createElement('p', {className:'text-sm text-gray-600'}, 'Site Sign-In / Sign-Out (Offline-ready)')
+            ),
+            React.createElement('div', {className:'flex items-center gap-3'},
+              React.createElement(Toggle, {checked:mode==='OUT', onChange:function(c){ setMode(c?'OUT':'IN'); }}),
+              !admin ? React.createElement('div',{className:'flex items-center gap-2'},
+                React.createElement('input',{value:pinInput,onChange:function(e){setPinInput(e.target.value);},placeholder:'Admin PIN',className:'w-28 border rounded-xl px-3 py-1'}),
+                React.createElement('button',{onClick:function(){ setAdmin(pinInput===settings.adminPin); },className:'px-3 py-2 rounded-xl bg-black text-white'},'Admin')
+              ) : React.createElement('button',{onClick:function(){ setAdmin(false); },className:'px-3 py-2 rounded-xl bg-gray-800 text-white'},'Exit Admin')
             )
+          ),
+          React.createElement('div', {className:'grid grid-cols-1 lg:grid-cols-3 gap-6'},
+            React.createElement('div', {className:'lg:col-span-2'},
+              React.createElement(SignForm, {mode:mode, settings:settings, onUpsert:upsertWorker, onVisit:recordVisit, workers:workers, onModeToggle:function(){ setMode(mode==='IN'?'OUT':'IN'); }, lastByWorker:lastByWorker })
+            ),
+            React.createElement('div', {className:'lg:col-span-1'},
+              React.createElement(Section, {title:'On-site right now', right: React.createElement('div', {className:'flex items-center gap-2'},
+                  React.createElement('button',{onClick:exportCSV,className:'text-sm bg-black text-white px-3 py-2 rounded-xl'}, 'Export CSV'),
+                  React.createElement('button', {onClick:function(){ window.print(); }, className:'text-sm bg-amber-500 text-white px-3 py-2 rounded-xl'}, 'Fire Roll Call (Print)')
+                )},
+                React.createElement('div', {className:'flex items-center gap-2 mb-2'},
+                  React.createElement('input',{value:search,onChange:function(e){setSearch(e.target.value);},placeholder:'Search name/company',className:'w-full border rounded-xl px-3 py-2'}),
+                  React.createElement('button',{onClick:function(){ setSearch(''); },className:'text-sm underline'},'Clear')
+                ),
+                React.createElement(RosterList, {people: workers.filter(function(w){ var last = lastByWorker.get(w.id); return last && last.direction==='IN' && (w.name + ' ' + w.company).toLowerCase().includes(search.toLowerCase()); }), visits:visits})
+              ),
+              admin ? React.createElement(Section, {title:'Admin: Recent entries'},
+                React.createElement(AdminVisits, {visits:visits, workers:workers})
+              ) : null
+            )
+          ),
+          React.createElement('footer', {className:'mt-8 text-center text-xs text-gray-500'},
+            React.createElement('p', null, 'Data is stored locally in this browser. Export CSV for backups. © ' + (new Date().getFullYear()) + ' RSK Consultancy – Site Kiosk MVP')
           )
-        ),
-        React.createElement('footer', {className:'mt-8 text-center text-xs text-gray-500'},
-          React.createElement('p', null, 'Data is stored locally in this browser. Export CSV for backups. © ' + (new Date().getFullYear()) + ' RSK Consultancy – Site Kiosk MVP')
         )
       );
     }
