@@ -4,27 +4,29 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Site Sign-In</title>
-  <meta name="description" content="Site sign-in/out app">
+  <meta name="description" content="Site sign-in/out app" />
   <link rel="icon" href="data:,">
-  <!-- Tailwind (fine for quick deploys; for production, compile it) -->
+  <!-- Tailwind (OK for quick deploys; for production compile it) -->
   <script src="https://cdn.tailwindcss.com"></script>
-
   <style>
-    /* Print just the Fire Roll Call tick sheet */
     .print-only { display: none; }
-    @media print {
-      .no-print { display: none !important; }
-      .print-only { display: block !important; }
-      body { background: #fff; }
-    }
-    .print-sheet table { width: 100%; border-collapse: collapse; }
-    .print-sheet th, .print-sheet td { border: 1px solid #000; padding: 8px; text-align: left; }
-    .print-sheet .box { width: 18px; height: 18px; border: 1px solid #000; display: inline-block; }
-    .print-sheet h1 { font-size: 20px; margin: 0 0 8px 0; }
-    .print-sheet p { margin: 0 0 12px 0; }
+    @media print { .no-print { display:none!important; } .print-only { display:block!important; } body{background:#fff;} }
+    .print-sheet table { width:100%; border-collapse:collapse; }
+    .print-sheet th,.print-sheet td { border:1px solid #000; padding:8px; text-align:left; }
+    .print-sheet .box { width:18px; height:18px; border:1px solid #000; display:inline-block; }
+    .print-sheet h1 { font-size:20px; margin:0 0 8px 0; }
+    .print-sheet p { margin:0 0 12px 0; }
   </style>
 </head>
 <body class="bg-gray-50">
+  <!-- Boot / Error panel -->
+  <div id="boot" class="no-print p-4">
+    <div id="boot-status" class="text-sm text-gray-700">
+      Loading app… If this message stays, scripts failed to load.
+    </div>
+    <pre id="boot-error" class="mt-2 hidden text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg p-2 whitespace-pre-wrap"></pre>
+  </div>
+
   <div id="root"></div>
 
   <!-- Unregister any old service worker to avoid stale cache -->
@@ -32,505 +34,708 @@
     if ('serviceWorker' in navigator && navigator.serviceWorker.getRegistrations) {
       navigator.serviceWorker.getRegistrations().then(function(rs){ rs.forEach(function(r){ r.unregister(); }); });
     }
+    // Error capture to avoid blank screen
+    window.addEventListener('error', function (e) {
+      var el = document.getElementById('boot-error');
+      if (el) { el.textContent = (e && e.message) ? e.message : 'Unknown script error'; el.classList.remove('hidden'); }
+    });
+    window.addEventListener('unhandledrejection', function (e) {
+      var el = document.getElementById('boot-error');
+      if (el) { el.textContent = 'Unhandled promise rejection: ' + (e && e.reason ? (e.reason.message || String(e.reason)) : 'Unknown'); el.classList.remove('hidden'); }
+    });
+    function hideBootPanel(){ var s=document.getElementById('boot-status'); if(s){ s.textContent=''; } var b=document.getElementById('boot'); if(b){ b.classList.add('hidden'); } }
+    function showBootError(msg){ var el=document.getElementById('boot-error'); if(el){ el.textContent=msg; el.classList.remove('hidden'); } }
   </script>
 
   <!-- React 18 UMD -->
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 
+  <!-- App -->
   <script>
   (function(){
-    var useState = React.useState, useEffect = React.useEffect, useMemo = React.useMemo, useRef = React.useRef;
-
-    var PPE_ITEMS = [
-      { id: "boots", label: "Safety boots" },
-      { id: "hivis", label: "Hi-vis" },
-      { id: "hardhat", label: "Hard hat" },
-      { id: "gloves", label: "Gloves" },
-      { id: "eyewear", label: "Eye protection" }
-    ];
-
-    function uuid(){return([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g,function(c){return (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16);});}
-    function nowISO(){ return new Date().toISOString(); }
-
-    var KEY_WORKERS="siteSignIn.workers";
-    var KEY_VISITS="siteSignIn.visits";
-    var KEY_SETTINGS="siteSignIn.settings";
-    var KEY_PERSON_SITE="siteSignIn.personSite"; // map personId::siteId -> { induction: true, rams: true }
-
-    var defaultSettings = {
-      siteName: "Selfridges – Concession Works",
-      siteId: "",             // will be generated on first load
-      adminPin: "1234",
-      requireInduction: true,
-      requireRAMS: true,
-      requirePPE: ["boots","hivis","hardhat"],
-      requirePhoto: false
-    };
-
-    function load(k, f){ try{ var r = localStorage.getItem(k); return r ? JSON.parse(r) : f; } catch(e){ return f; } }
-    function save(k, v){ localStorage.setItem(k, JSON.stringify(v)); }
-
-    function toCSV(rows, headers){
-      function esc(s){ return '"' + String(s == null ? '' : s).replace(/"/g, '""') + '"'; }
-      var head = headers.map(function(h){ return esc(h.label); }).join(',');
-      var body = rows.map(function(r){ return headers.map(function(h){ return esc(h.get(r)); }).join(','); }).join('\n');
-      return head + '\n' + body;
-    }
-    function download(fn, content){
-      var blob = new Blob([content], {type:'text/csv;charset=utf-8;'});
-      var url = URL.createObjectURL(blob);
-      var a = document.createElement('a'); a.href=url; a.download=fn; a.click(); URL.revokeObjectURL(url);
-    }
-
-    function Section(props){
-      return React.createElement('div', {className:'bg-white rounded-2xl shadow p-5 mb-6'},
-        React.createElement('div', {className:'flex items-center justify-between mb-4'},
-          React.createElement('h2', {className:'text-xl font-semibold'}, props.title),
-          props.right
-        ),
-        props.children
-      );
-    }
-
-    function Pill(props){
-      return React.createElement('span', {className:'inline-block text-xs px-2 py-1 rounded-full bg-gray-100 ' + (props.className||'')}, props.children);
-    }
-
-    function Toggle(props){
-      var checked = props.checked;
-      return React.createElement('div', {className:'flex items-center gap-2 bg-white rounded-full px-2 py-1 shadow'},
-        React.createElement('span', {className:'text-xs px-2 py-1 rounded-full ' + (checked?'bg-red-100 text-red-800':'bg-green-100 text-green-800')}, checked?'OUT':'IN'),
-        React.createElement('button', {type:'button','aria-label':'Toggle IN/OUT',onClick:function(){props.onChange(!checked);},className:'w-12 h-6 rounded-full transition-all ' + (checked?'bg-red-500':'bg-green-500')},
-          React.createElement('span', {className:'block w-5 h-5 bg-white rounded-full shadow transform transition-all ' + (checked?'translate-x-6':'translate-x-1')})
-        )
-      );
-    }
-
-    function TextInput(props){
-      return React.createElement('label', {className:'block mb-3'},
-        React.createElement('span', {className:'block text-sm text-gray-700 mb-1'}, props.label, props.required? React.createElement('span',{className:'text-red-500'}, ' *') : null),
-        React.createElement('input', {value:props.value,onChange:function(e){props.onChange(e.target.value);},placeholder:(props.placeholder||''),className:'w-full border rounded-xl px-3 py-2 focus:outline-none focus:ring ' + (props.error?'border-red-500 ring-red-200':'border-gray-300')}),
-        props.error ? React.createElement('span',{className:'text-xs text-red-600 mt-1 block'}, props.error) : null
-      );
-    }
-
-    function Select(props){
-      return React.createElement('label', {className:'block mb-3'},
-        React.createElement('span', {className:'block text-sm text-gray-700 mb-1'}, props.label, props.required? React.createElement('span',{className:'text-red-500'}, ' *') : null),
-        React.createElement('select', {value:props.value,onChange:function(e){props.onChange(e.target.value);},className:'w-full border rounded-xl px-3 py-2 ' + (props.error?'border-red-500':'border-gray-300')},
-          props.options.map(function(o){ return React.createElement('option',{key:o.value,value:o.value}, o.label); })
-        ),
-        props.error ? React.createElement('span',{className:'text-xs text-red-600 mt-1 block'}, props.error) : null
-      );
-    }
-
-    function Checkbox(props){
-      return React.createElement('label', {className:'flex items-center gap-2 mb-2 ' + (props.error?'text-red-700':'')},
-        React.createElement('input', {type:'checkbox',checked:props.checked,onChange:function(e){props.onChange(e.target.checked);}}),
-        React.createElement('span', null, props.label, props.error? ' (required)' : '')
-      );
-    }
-
-    // Camera (always render <video> so ref is never null)
-    function CameraCapture(props){
-      var value = props.value, onChange = props.onChange;
-      var _a = useState(false), active=_a[0], setActive=_a[1];
-      var _b = useState(''), error=_b[0], setError=_b[1];
-      var _c = useState([]), cameras=_c[0], setCameras=_c[1];
-      var _d = useState(null), currentDeviceId=_d[0], setCurrentDeviceId=_d[1];
-      var videoRef = useRef(null);
-      var streamRef = useRef(null);
-
-      function ensureVideoReady(v){
-        if(!v) return;
-        v.muted = true;
-        v.setAttribute('playsinline','');
-        v.setAttribute('autoplay','');
-        v.onloadedmetadata = function(){
-          try{ v.play(); }catch(_){}
-        };
+    try {
+      if (!window.React || !window.ReactDOM) {
+        showBootError('React failed to load. Check network/CDN access to unpkg.com.');
+        return;
       }
 
-      function attach(stream){
-        var v = videoRef.current;
-        if(!v){ requestAnimationFrame(function(){ attach(stream); }); return; }
-        streamRef.current = stream;
-        v.srcObject = stream;
-        ensureVideoReady(v);
-        setActive(true);
+      var useState = React.useState, useEffect = React.useEffect, useMemo = React.useMemo, useRef = React.useRef;
+
+      var PPE_ITEMS = [
+        { id: "boots", label: "Safety boots" },
+        { id: "hivis", label: "Hi-vis" },
+        { id: "hardhat", label: "Hard hat" },
+        { id: "gloves", label: "Gloves" },
+        { id: "eyewear", label: "Eye protection" }
+      ];
+
+      function uuid(){return([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g,function(c){return (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16);});}
+      function nowISO(){ return new Date().toISOString(); }
+
+      var KEY_WORKERS="siteSignIn.workers";
+      var KEY_VISITS="siteSignIn.visits";
+      var KEY_SETTINGS="siteSignIn.settings";
+      var KEY_PERSON_SITE="siteSignIn.personSite"; // personId::siteId -> { induction: true, rams: true }
+
+      var defaultSettings = {
+        siteName: "Selfridges – Concession Works",
+        siteId: "",             // generated on first load
+        adminPin: "1234",
+        requireInduction: true,
+        requireRAMS: true,
+        requirePPE: ["boots","hivis","hardhat"],
+        requirePhoto: false
+      };
+
+      function load(k, f){ try{ var r = localStorage.getItem(k); return r ? JSON.parse(r) : f; } catch(e){ return f; } }
+      function save(k, v){ localStorage.setItem(k, JSON.stringify(v)); }
+
+      function toCSV(rows, headers){
+        function esc(s){ return '"' + String(s == null ? '' : s).replace(/"/g, '""') + '"'; }
+        var head = headers.map(function(h){ return esc(h.label); }).join(',');
+        var body = rows.map(function(r){ return headers.map(function(h){ return esc(h.get(r)); }).join(','); }).join('\n');
+        return head + '\n' + body;
+      }
+      function download(fn, content){
+        var blob = new Blob([content], {type:'text/csv;charset=utf-8;'});
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a'); a.href=url; a.download=fn; a.click(); URL.revokeObjectURL(url);
       }
 
-      function stop(){
-        if(streamRef.current){
-          streamRef.current.getTracks().forEach(function(t){ t.stop(); });
-          streamRef.current = null;
+      function Section(props){
+        return React.createElement('div', {className:'bg-white rounded-2xl shadow p-5 mb-6'},
+          React.createElement('div', {className:'flex items-center justify-between mb-4'},
+            React.createElement('h2', {className:'text-xl font-semibold'}, props.title),
+            props.right
+          ),
+          props.children
+        );
+      }
+
+      function Pill(props){
+        return React.createElement('span', {className:'inline-block text-xs px-2 py-1 rounded-full bg-gray-100 ' + (props.className||'')}, props.children);
+      }
+
+      function Toggle(props){
+        var checked = props.checked;
+        return React.createElement('div', {className:'flex items-center gap-2 bg-white rounded-full px-2 py-1 shadow'},
+          React.createElement('span', {className:'text-xs px-2 py-1 rounded-full ' + (checked?'bg-red-100 text-red-800':'bg-green-100 text-green-800')}, checked?'OUT':'IN'),
+          React.createElement('button', {type:'button','aria-label':'Toggle IN/OUT',onClick:function(){props.onChange(!checked);},className:'w-12 h-6 rounded-full transition-all ' + (checked?'bg-red-500':'bg-green-500')},
+            React.createElement('span', {className:'block w-5 h-5 bg-white rounded-full shadow transform transition-all ' + (checked?'translate-x-6':'translate-x-1')})
+          )
+        );
+      }
+
+      function TextInput(props){
+        return React.createElement('label', {className:'block mb-3'},
+          React.createElement('span', {className:'block text-sm text-gray-700 mb-1'}, props.label, props.required? React.createElement('span',{className:'text-red-500'}, ' *') : null),
+          React.createElement('input', {value:props.value,onChange:function(e){props.onChange(e.target.value);},placeholder:(props.placeholder||''),className:'w-full border rounded-xl px-3 py-2 focus:outline-none focus:ring ' + (props.error?'border-red-500 ring-red-200':'border-gray-300')}),
+          props.error ? React.createElement('span',{className:'text-xs text-red-600 mt-1 block'}, props.error) : null
+        );
+      }
+
+      function Select(props){
+        return React.createElement('label', {className:'block mb-3'},
+          React.createElement('span', {className:'block text-sm text-gray-700 mb-1'}, props.label, props.required? React.createElement('span',{className:'text-red-500'}, ' *') : null),
+          React.createElement('select', {value:props.value,onChange:function(e){props.onChange(e.target.value);},className:'w-full border rounded-xl px-3 py-2 ' + (props.error?'border-red-500':'border-gray-300')},
+            props.options.map(function(o){ return React.createElement('option',{key:o.value,value:o.value}, o.label); })
+          ),
+          props.error ? React.createElement('span',{className:'text-xs text-red-600 mt-1 block'}, props.error) : null
+        );
+      }
+
+      function Checkbox(props){
+        return React.createElement('label', {className:'flex items-center gap-2 mb-2 ' + (props.error?'text-red-700':'')},
+          React.createElement('input', {type:'checkbox',checked:props.checked,onChange:function(e){props.onChange(e.target.checked);}}),
+          React.createElement('span', null, props.label, props.error? ' (required)' : '')
+        );
+      }
+
+      // Camera
+      function CameraCapture(props){
+        var value = props.value, onChange = props.onChange;
+        var _a = useState(false), active=_a[0], setActive=_a[1];
+        var _b = useState(''), error=_b[0], setError=_b[1];
+        var _c = useState([]), cameras=_c[0], setCameras=_c[1];
+        var _d = useState(null), currentDeviceId=_d[0], setCurrentDeviceId=_d[1];
+        var videoRef = useRef(null);
+        var streamRef = useRef(null);
+
+        function ensureVideoReady(v){
+          if(!v) return;
+          v.muted = true;
+          v.setAttribute('playsinline','');
+          v.setAttribute('autoplay','');
+          v.onloadedmetadata = function(){ try{ v.play(); }catch(_){ } };
         }
-        setActive(false);
-      }
-
-      function pickFrontDevice(devs){
-        var cams = devs.filter(function(d){ return d.kind==='videoinput'; });
-        var front = cams.find(function(d){ return /front|user|face/i.test(d.label); });
-        return front || cams[0] || null;
-      }
-
-      async function enumerateAfterPermission(){
-        try{
-          var devs = await navigator.mediaDevices.enumerateDevices();
-          setCameras(devs.filter(function(d){return d.kind==='videoinput';}));
-          return devs;
-        }catch(_){ return []; }
-      }
-
-      async function start(){
-        setError('');
-        stop();
-        if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
-          setError('Camera API not supported on this browser.');
-          return;
+        function attach(stream){
+          var v = videoRef.current;
+          if(!v){ requestAnimationFrame(function(){ attach(stream); }); return; }
+          streamRef.current = stream;
+          v.srcObject = stream;
+          ensureVideoReady(v);
+          setActive(true);
         }
-        try{
-          var s = await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'user'}}, audio:false});
-          attach(s);
-          var devs1 = await enumerateAfterPermission();
-          var front1 = pickFrontDevice(devs1);
-          setCurrentDeviceId(front1 ? front1.deviceId : null);
-          return;
-        }catch(e1){
+        function stop(){
+          if(streamRef.current){ streamRef.current.getTracks().forEach(function(t){ t.stop(); }); streamRef.current = null; }
+          setActive(false);
+        }
+        function pickFrontDevice(devs){
+          var cams = devs.filter(function(d){ return d.kind==='videoinput'; });
+          var front = cams.find(function(d){ return /front|user|face/i.test(d.label); });
+          return front || cams[0] || null;
+        }
+        async function enumerateAfterPermission(){
           try{
-            var s2 = await navigator.mediaDevices.getUserMedia({video:true, audio:false});
-            var devs2 = await enumerateAfterPermission();
-            var chosen = s2;
-            var front2 = pickFrontDevice(devs2);
-            if(front2 && front2.deviceId){
-              s2.getTracks().forEach(function(t){t.stop();});
-              var s3 = await navigator.mediaDevices.getUserMedia({video:{deviceId:{exact:front2.deviceId}}, audio:false});
-              chosen = s3; setCurrentDeviceId(front2.deviceId);
+            var devs = await navigator.mediaDevices.enumerateDevices();
+            setCameras(devs.filter(function(d){return d.kind==='videoinput';}));
+            return devs;
+          }catch(_){ return []; }
+        }
+        async function start(){
+          setError(''); stop();
+          if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+            setError('Camera API not supported on this browser.'); return;
+          }
+          try{
+            var s = await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'user'}}, audio:false});
+            attach(s);
+            var devs1 = await enumerateAfterPermission();
+            var front1 = pickFrontDevice(devs1);
+            setCurrentDeviceId(front1 ? front1.deviceId : null);
+            return;
+          }catch(e1){
+            try{
+              var s2 = await navigator.mediaDevices.getUserMedia({video:true, audio:false});
+              var devs2 = await enumerateAfterPermission();
+              var chosen = s2;
+              var front2 = pickFrontDevice(devs2);
+              if(front2 && front2.deviceId){
+                s2.getTracks().forEach(function(t){t.stop();});
+                var s3 = await navigator.mediaDevices.getUserMedia({video:{deviceId:{exact:front2.deviceId}}, audio:false});
+                chosen = s3; setCurrentDeviceId(front2.deviceId);
+              }
+              attach(chosen);
+            }catch(e2){
+              setError('Camera error: ' + (e2 && e2.name ? e2.name : 'Unknown') + (e2 && e2.message ? ' – ' + e2.message : ''));
             }
-            attach(chosen);
-          }catch(e2){
-            setError('Camera error: ' + (e2 && e2.name ? e2.name : 'Unknown') + (e2 && e2.message ? ' – ' + e2.message : ''));
           }
         }
-      }
-
-      async function switchCamera(){
-        try{
-          var devs = cameras.length ? cameras : await navigator.mediaDevices.enumerateDevices();
-          var vids = devs.filter(function(d){return d.kind==='videoinput';});
-          if(!vids.length){ setError('No cameras found.'); return; }
-          var idx = vids.findIndex(function(d){return d.deviceId===currentDeviceId;});
-          var next = vids[(idx+1)%vids.length];
-          stop();
-          var s = await navigator.mediaDevices.getUserMedia({video:{deviceId:{exact:next.deviceId}}, audio:false});
-          setCurrentDeviceId(next.deviceId);
-          attach(s);
-        }catch(e){
-          setError('Switch error: ' + (e.name||'') + (e.message? ' – '+e.message : ''));
-        }
-      }
-
-      return React.createElement('div', {className:'bg-gray-50 rounded-xl p-4'},
-        React.createElement('h3', {className:'font-medium mb-2'}, 'Photo'),
-        React.createElement('video', {ref:videoRef, className:'rounded-xl border w-full ' + (active?'':'hidden'), playsInline:true, muted:true, autoPlay:true}),
-        value && !active ? React.createElement('div', {className:'space-y-2 mt-2'},
-          React.createElement('img', {src:value, alt:'Captured', className:'rounded-xl border max-h-48'}),
-          React.createElement('div', {className:'flex gap-2'},
-            React.createElement('button', {onClick:function(){onChange('');}, className:'px-3 py-2 rounded-xl bg-gray-200'}, 'Remove'),
-            React.createElement('button', {onClick:start, className:'px-3 py-2 rounded-xl bg-black text-white'}, 'Retake')
-          )
-        ) : null,
-        (!value && active) ? React.createElement('div', {className:'flex gap-2 mt-2'},
-          React.createElement('button', {onClick:function(){
-            if(!videoRef.current) return;
-            var v=videoRef.current, c=document.createElement('canvas');
-            var w=640, h=Math.round((v.videoHeight/v.videoWidth)*640)||480;
-            c.width=w; c.height=h; c.getContext('2d').drawImage(v,0,0,w,h);
-            onChange(c.toDataURL('image/jpeg',0.85));
+        async function switchCamera(){
+          try{
+            var devs = cameras.length ? cameras : await navigator.mediaDevices.enumerateDevices();
+            var vids = devs.filter(function(d){return d.kind==='videoinput';});
+            if(!vids.length){ setError('No cameras found.'); return; }
+            var idx = vids.findIndex(function(d){return d.deviceId===currentDeviceId;});
+            var next = vids[(idx+1)%vids.length];
             stop();
-          }, className:'px-3 py-2 rounded-xl bg-green-600 text-white'}, 'Take photo'),
-          React.createElement('button', {onClick:stop, className:'px-3 py-2 rounded-xl bg-gray-200'}, 'Cancel'),
-          React.createElement('button', {onClick:switchCamera, className:'px-3 py-2 rounded-xl bg-gray-200'}, 'Switch camera')
-        ) : null,
-        (!value && !active) ? React.createElement('div', {className:'space-y-2'},
-          error? React.createElement('p',{className:'text-sm text-red-600'}, error) : React.createElement('p',{className:'text-xs text-gray-500'}, 'You may need to allow camera permissions and use HTTPS.'),
-          React.createElement('button', {onClick:start, className:'px-3 py-2 rounded-xl bg-black text-white'}, 'Open camera'),
-          React.createElement('p', {className:'text-xs text-gray-500'}, 'Prefers the front camera; use "Switch camera" if needed.')
-        ) : null
-      );
-    }
-
-    function getLastIn(visits, workerId){
-      var v = visits.slice().reverse().find(function(x){ return x.workerId===workerId && x.direction==='IN'; });
-      return v ? v.timeISO : null;
-    }
-
-    function RosterList(props){
-      var people = props.people, visits = props.visits;
-      if(people.length===0) return React.createElement('p',{className:'text-sm text-gray-500'}, 'No one on site.');
-      return React.createElement('ul', {className:'divide-y'},
-        people.map(function(p){
-          var since = getLastIn(visits, p.id);
-          return React.createElement('li', {key:p.id, className:'py-2 flex items-center justify-between'},
-            React.createElement('div', null,
-              React.createElement('div', {className:'font-medium'}, p.name),
-              React.createElement('div', {className:'text-xs text-gray-600'}, (p.company||'') + ' · ' + (p.role||'')),
-              since ? React.createElement('div', {className:'text-xs text-gray-500'}, 'IN since ' + new Date(since).toLocaleTimeString()) : null
-            ),
-            React.createElement(Pill, null, 'On site')
-          );
-        })
-      );
-    }
-
-    function AdminVisits(props){
-      var visits = props.visits, workers = props.workers;
-      var rows = visits.slice().reverse().slice(0, 50);
-      if(rows.length===0) return React.createElement('p',{className:'text-sm text-gray-500'}, 'No entries yet.');
-      return React.createElement('div', {className:'space-y-3'},
-        rows.map(function(r){
-          var w = workers.find(function(x){return x.id===r.workerId;});
-          return React.createElement('div', {key:r.id, className:'flex items-center gap-3 border rounded-xl p-3'},
-            r.photoDataUrl ? React.createElement('img', {src:r.photoDataUrl, alt:'photo', className:'w-20 h-20 object-cover rounded-lg border'}) :
-              React.createElement('div', {className:'w-20 h-20 rounded-lg border bg-gray-100 flex items-center justify-center text-xs text-gray-500'}, 'No photo'),
-            React.createElement('div', {className:'flex-1'},
-              React.createElement('div', {className:'font-medium'}, (w?w.name:'') + ' · ' + (w?w.company:'')),
-              React.createElement('div', {className:'text-xs text-gray-600'}, r.direction + ' · ' + new Date(r.timeISO).toLocaleString()),
-              React.createElement('div', {className:'text-xs text-gray-500'}, (w && w.role) ? w.role : '')
-            )
-          );
-        })
-      );
-    }
-
-    function AdminPeople(props){
-      var workers = props.workers, visits = props.visits, isInductionDone = props.isInductionDone, isRAMSDone = props.isRAMSDone, onShowHistory = props.onShowHistory;
-      if(workers.length===0) return React.createElement('p',{className:'text-sm text-gray-500'}, 'No saved people yet.');
-      return React.createElement('div', {className:'space-y-2'},
-        workers.map(function(w){
-          var last = visits.filter(function(v){return v.workerId===w.id;}).slice(-1)[0] || null;
-          var onSite = last && last.direction==='IN';
-          return React.createElement('div', {key:w.id, className:'flex items-center justify-between border rounded-xl p-3'},
-            React.createElement('div', null,
-              React.createElement('div', {className:'font-medium'}, w.name + (w.company ? ' · ' + w.company : '')),
-              React.createElement('div', {className:'text-xs text-gray-500'}, onSite ? 'On site' : 'Last: ' + (last ? (last.direction + ' ' + new Date(last.timeISO).toLocaleString()) : 'n/a')),
-              React.createElement('div', {className:'text-xs'}, 'Induction: ' + (isInductionDone(w.id) ? 'Yes' : 'No') + ' · RAMS: ' + (isRAMSDone(w.id) ? 'Yes' : 'No'))
-            ),
-            React.createElement('div', {className:'flex items-center gap-2'},
-              React.createElement('button', {className:'text-sm underline', onClick:function(){ onShowHistory(w.id); }}, 'View history')
-            )
-          );
-        })
-      );
-    }
-
-    function HistoryModal(props){
-      var onClose=props.onClose, person=props.person, rows=props.rows;
-      if(!person) return null;
-      return React.createElement('div', {className:'fixed inset-0 bg-black/40 flex items-center justify-center z-50'},
-        React.createElement('div', {className:'bg-white rounded-2xl shadow max-w-2xl w-full p-5'},
-          React.createElement('div', {className:'flex items-center justify-between mb-3'},
-            React.createElement('h3', {className:'text-lg font-semibold'}, 'History — ' + person.name + (person.company ? ' (' + person.company + ')' : '')),
-            React.createElement('button', {className:'px-3 py-1 bg-gray-200 rounded-xl', onClick:onClose}, 'Close')
-          ),
-          rows.length===0 ? React.createElement('p', {className:'text-sm text-gray-500'}, 'No visits yet.') :
-          React.createElement('ul', {className:'space-y-2 max-h-[60vh] overflow-auto'},
-            rows.map(function(r){
-              return React.createElement('li', {key:r.id, className:'flex items-center gap-3 border rounded-xl p-3'},
-                r.photoDataUrl ? React.createElement('img', {src:r.photoDataUrl, alt:'photo', className:'w-16 h-16 object-cover rounded-lg border'}) :
-                  React.createElement('div', {className:'w-16 h-16 rounded-lg border bg-gray-100 flex items-center justify-center text-xs text-gray-500'}, 'No photo'),
-                React.createElement('div', null,
-                  React.createElement('div', {className:'font-medium'}, r.direction + ' · ' + new Date(r.timeISO).toLocaleString()),
-                  React.createElement('div', {className:'text-xs text-gray-500'}, 'PPE: ' + ((r.ppe||[]).join('; ') || '—'))
-                )
-              );
-            })
-          )
-        )
-      );
-    }
-
-    function SignForm(props){
-      var mode=props.mode, settings=props.settings, onUpsert=props.onUpsert, onVisit=props.onVisit, workers=props.workers, onModeToggle=props.onModeToggle, lastByWorker=props.lastByWorker;
-      var isInductionDone = props.isInductionDone || function(){return false;};
-      var isRAMSDone = props.isRAMSDone || function(){return false;};
-      var onSetPersonSite = props.onSetPersonSite || function(){};
-
-      var _a = useState(''), existingId=_a[0], setExistingId=_a[1];
-      var _b = useState(''), name=_b[0], setName=_b[1];
-      var _c = useState(''), company=_c[0], setCompany=_c[1];
-      var _d = useState(''), role=_d[0], setRole=_d[1];
-      var _e = useState(''), cscs=_e[0], setCscs=_e[1];
-      var _f = useState(''), phone=_f[0], setPhone=_f[1];
-      var _g = useState(''), email=_g[0], setEmail=_g[1];
-      var _h = useState(''), emergencyContact=_h[0], setEmergencyContact=_h[1];
-      var _i = useState(''), vehicleReg=_i[0], setVehicleReg=_i[1];
-      var _j = useState([]), ppe=_j[0], setPpe=_j[1];
-      var _k = useState(false), induction=_k[0], setInduction=_k[1];
-      var _l = useState(false), rams=_l[0], setRams=_l[1];
-      var _m = useState(''), notes=_m[0], setNotes=_m[1];
-      var _n = useState(false), ack=_n[0], setAck=_n[1];
-      var _o = useState(''), photoDataUrl=_o[0], setPhotoDataUrl=_o[1];
-      var _p = useState({}), errors=_p[0], setErrors=_p[1];
-
-      useEffect(function(){
-        if(!existingId) return;
-        var w = workers.find(function(x){ return x.id===existingId; });
-        if(w){
-          setName(w.name||''); setCompany(w.company||''); setRole(w.role||''); setCscs(w.cscs||'');
-          setPhone(w.phone||''); setEmail(w.email||''); setEmergencyContact(w.emergencyContact||''); setVehicleReg(w.vehicleReg||'');
+            var s = await navigator.mediaDevices.getUserMedia({video:{deviceId:{exact:next.deviceId}}, audio:false});
+            setCurrentDeviceId(next.deviceId);
+            attach(s);
+          }catch(e){
+            setError('Switch error: ' + (e.name||'') + (e.message? ' – '+e.message : ''));
+          }
         }
-      }, [existingId, workers]);
 
-      function togglePPE(id){ setPpe(function(prev){ return prev.includes(id) ? prev.filter(function(x){return x!==id;}) : prev.concat([id]); }); }
+        return React.createElement('div', {className:'bg-gray-50 rounded-xl p-4'},
+          React.createElement('h3', {className:'font-medium mb-2'}, 'Photo'),
+          React.createElement('video', {ref:videoRef, className:'rounded-xl border w-full ' + (active?'':'hidden'), playsInline:true, muted:true, autoPlay:true}),
+          value && !active ? React.createElement('div', {className:'space-y-2 mt-2'},
+            React.createElement('img', {src:value, alt:'Captured', className:'rounded-xl border max-h-48'}),
+            React.createElement('div', {className:'flex gap-2'},
+              React.createElement('button', {onClick:function(){onChange('');}, className:'px-3 py-2 rounded-xl bg-gray-200'}, 'Remove'),
+              React.createElement('button', {onClick:start, className:'px-3 py-2 rounded-xl bg-black text-white'}, 'Retake')
+            )
+          ) : null,
+          (!value && active) ? React.createElement('div', {className:'flex gap-2 mt-2'},
+            React.createElement('button', {onClick:function(){
+              if(!videoRef.current) return;
+              var v=videoRef.current, c=document.createElement('canvas');
+              var w=640, h=Math.round((v.videoHeight/v.videoWidth)*640)||480;
+              c.width=w; c.height=h; c.getContext('2d').drawImage(v,0,0,w,h);
+              onChange(c.toDataURL('image/jpeg',0.85));
+              stop();
+            }, className:'px-3 py-2 rounded-xl bg-green-600 text-white'}, 'Take photo'),
+            React.createElement('button', {onClick:stop, className:'px-3 py-2 rounded-xl bg-gray-200'}, 'Cancel'),
+            React.createElement('button', {onClick:switchCamera, className:'px-3 py-2 rounded-xl bg-gray-200'}, 'Switch camera')
+          ) : null,
+          (!value && !active) ? React.createElement('div', {className:'space-y-2'},
+            error? React.createElement('p',{className:'text-sm text-red-600'}, error) : React.createElement('p',{className:'text-xs text-gray-500'}, 'You may need to allow camera permissions and use HTTPS.'),
+            React.createElement('button', {onClick:start, className:'px-3 py-2 rounded-xl bg-black text-white'}, 'Open camera'),
+            React.createElement('p', {className:'text-xs text-gray-500'}, 'Prefers the front camera; use "Switch camera" if needed.')
+          ) : null
+        );
+      }
 
-      var existingHasInduction = existingId ? isInductionDone(existingId) : false;
-      var existingHasRAMS = existingId ? isRAMSDone(existingId) : false;
+      function getLastIn(visits, workerId){
+        var v = visits.slice().reverse().find(function(x){ return x.workerId===workerId && x.direction==='IN'; });
+        return v ? v.timeISO : null;
+      }
 
-      function validate(){
-        var e = {};
-        if(mode==='OUT'){
-          if(!existingId) e.existingId = 'Select a person to sign out';
-          var lastOut = existingId ? (lastByWorker && lastByWorker.get(existingId)) : null;
-          if(!lastOut || lastOut.direction!=='IN') e.notOnSite = true;
-        } else {
-          if(!name.trim()) e.name='Name is required';
-          if(!company.trim()) e.company='Company is required';
-          if(settings.requireInduction && !induction && !existingHasInduction) e.induction = true;
-          if(settings.requireRAMS && !rams && !existingHasRAMS) e.rams = true;
-          var missing = (settings.requirePPE||[]).filter(function(id){ return !ppe.includes(id); });
-          if(missing.length) e.ppe = missing;
-          if(settings.requirePhoto && !photoDataUrl) e.photo = true;
-          if(!ack) e.ack = true;
+      function RosterList(props){
+        var people = props.people, visits = props.visits;
+        if(people.length===0) return React.createElement('p',{className:'text-sm text-gray-500'}, 'No one on site.');
+        return React.createElement('ul', {className:'divide-y'},
+          people.map(function(p){
+            var since = getLastIn(visits, p.id);
+            return React.createElement('li', {key:p.id, className:'py-2 flex items-center justify-between'},
+              React.createElement('div', null,
+                React.createElement('div', {className:'font-medium'}, p.name),
+                React.createElement('div', {className:'text-xs text-gray-600'}, (p.company||'') + ' · ' + (p.role||'')),
+                since ? React.createElement('div', {className:'text-xs text-gray-500'}, 'IN since ' + new Date(since).toLocaleTimeString()) : null
+              ),
+              React.createElement(Pill, null, 'On site')
+            );
+          })
+        );
+      }
 
-          // Block duplicate IN for same record
-          if(existingId){
-            var lastInForExisting = lastByWorker && lastByWorker.get(existingId);
-            if(lastInForExisting && lastInForExisting.direction === 'IN'){ e.existingId = 'Selected person is already signed IN'; }
+      function AdminVisits(props){
+        var visits = props.visits, workers = props.workers;
+        var rows = visits.slice().reverse().slice(0, 50);
+        if(rows.length===0) return React.createElement('p',{className:'text-sm text-gray-500'}, 'No entries yet.');
+        return React.createElement('div', {className:'space-y-3'},
+          rows.map(function(r){
+            var w = workers.find(function(x){return x.id===r.workerId;});
+            return React.createElement('div', {key:r.id, className:'flex items-center gap-3 border rounded-xl p-3'},
+              r.photoDataUrl ? React.createElement('img', {src:r.photoDataUrl, alt:'photo', className:'w-20 h-20 object-cover rounded-lg border'}) :
+                React.createElement('div', {className:'w-20 h-20 rounded-lg border bg-gray-100 flex items-center justify-center text-xs text-gray-500'}, 'No photo'),
+              React.createElement('div', {className:'flex-1'},
+                React.createElement('div', {className:'font-medium'}, (w?w.name:'') + ' · ' + (w?w.company:'')),
+                React.createElement('div', {className:'text-xs text-gray-600'}, r.direction + ' · ' + new Date(r.timeISO).toLocaleString()),
+                React.createElement('div', {className:'text-xs text-gray-500'}, (w && w.role) ? w.role : '')
+              )
+            );
+          })
+        );
+      }
+
+      function AdminPeople(props){
+        var workers = props.workers, visits = props.visits, isInductionDone = props.isInductionDone, isRAMSDone = props.isRAMSDone, onShowHistory = props.onShowHistory;
+        if(workers.length===0) return React.createElement('p',{className:'text-sm text-gray-500'}, 'No saved people yet.');
+        return React.createElement('div', {className:'space-y-2'},
+          workers.map(function(w){
+            var last = visits.filter(function(v){return v.workerId===w.id;}).slice(-1)[0] || null;
+            var onSite = last && last.direction==='IN';
+            return React.createElement('div', {key:w.id, className:'flex items-center justify-between border rounded-xl p-3'},
+              React.createElement('div', null,
+                React.createElement('div', {className:'font-medium'}, w.name + (w.company ? ' · ' + w.company : '')),
+                React.createElement('div', {className:'text-xs text-gray-500'}, onSite ? 'On site' : 'Last: ' + (last ? (last.direction + ' ' + new Date(last.timeISO).toLocaleString()) : 'n/a')),
+                React.createElement('div', {className:'text-xs'}, 'Induction: ' + (isInductionDone(w.id) ? 'Yes' : 'No') + ' · RAMS: ' + (isRAMSDone(w.id) ? 'Yes' : 'No'))
+              ),
+              React.createElement('div', {className:'flex items-center gap-2'},
+                React.createElement('button', {className:'text-sm underline', onClick:function(){ onShowHistory(w.id); }}, 'View history')
+              )
+            );
+          })
+        );
+      }
+
+      function HistoryModal(props){
+        var onClose=props.onClose, person=props.person, rows=props.rows;
+        if(!person) return null;
+        return React.createElement('div', {className:'fixed inset-0 bg-black/40 flex items-center justify-center z-50'},
+          React.createElement('div', {className:'bg-white rounded-2xl shadow max-w-2xl w-full p-5'},
+            React.createElement('div', {className:'flex items-center justify-between mb-3'},
+              React.createElement('h3', {className:'text-lg font-semibold'}, 'History — ' + person.name + (person.company ? ' (' + person.company + ')' : '')),
+              React.createElement('button', {className:'px-3 py-1 bg-gray-200 rounded-xl', onClick:onClose}, 'Close')
+            ),
+            rows.length===0 ? React.createElement('p', {className:'text-sm text-gray-500'}, 'No visits yet.') :
+            React.createElement('ul', {className:'space-y-2', style:{maxHeight:'60vh', overflow:'auto'}},
+              rows.map(function(r){
+                return React.createElement('li', {key:r.id, className:'flex items-center gap-3 border rounded-xl p-3'},
+                  r.photoDataUrl ? React.createElement('img', {src:r.photoDataUrl, alt:'photo', className:'w-16 h-16 object-cover rounded-lg border'}) :
+                    React.createElement('div', {className:'w-16 h-16 rounded-lg border bg-gray-100 flex items-center justify-center text-xs text-gray-500'}, 'No photo'),
+                  React.createElement('div', null,
+                    React.createElement('div', {className:'font-medium'}, r.direction + ' · ' + new Date(r.timeISO).toLocaleString()),
+                    React.createElement('div', {className:'text-xs text-gray-500'}, 'PPE: ' + ((r.ppe||[]).join('; ') || '—'))
+                  )
+                );
+              })
+            )
+          )
+        );
+      }
+
+      function SignForm(props){
+        var mode=props.mode, settings=props.settings, onUpsert=props.onUpsert, onVisit=props.onVisit, workers=props.workers, onModeToggle=props.onModeToggle, lastByWorker=props.lastByWorker;
+        var isInductionDone = props.isInductionDone || function(){return false;};
+        var isRAMSDone = props.isRAMSDone || function(){return false;};
+        var onSetPersonSite = props.onSetPersonSite || function(){};
+
+        var _a = useState(''), existingId=_a[0], setExistingId=_a[1];
+        var _b = useState(''), name=_b[0], setName=_b[1];
+        var _c = useState(''), company=_c[0], setCompany=_c[1];
+        var _d = useState(''), role=_d[0], setRole=_d[1];
+        var _e = useState(''), cscs=_e[0], setCscs=_e[1];
+        var _f = useState(''), phone=_f[0], setPhone=_f[1];
+        var _g = useState(''), email=_g[0], setEmail=_g[1];
+        var _h = useState(''), emergencyContact=_h[0], setEmergencyContact=_h[1];
+        var _i = useState(''), vehicleReg=_i[0], setVehicleReg=_i[1];
+        var _j = useState([]), ppe=_j[0], setPpe=_j[1];
+        var _k = useState(false), induction=_k[0], setInduction=_k[1];
+        var _l = useState(false), rams=_l[0], setRams=_l[1];
+        var _m = useState(''), notes=_m[0], setNotes=_m[1];
+        var _n = useState(false), ack=_n[0], setAck=_n[1];
+        var _o = useState(''), photoDataUrl=_o[0], setPhotoDataUrl=_o[1];
+        var _p = useState({}), errors=_p[0], setErrors=_p[1];
+
+        useEffect(function(){
+          if(!existingId) return;
+          var w = workers.find(function(x){ return x.id===existingId; });
+          if(w){
+            setName(w.name||''); setCompany(w.company||''); setRole(w.role||''); setCscs(w.cscs||'');
+            setPhone(w.phone||''); setEmail(w.email||''); setEmergencyContact(w.emergencyContact||''); setVehicleReg(w.vehicleReg||'');
+          }
+        }, [existingId, workers]);
+
+        function togglePPE(id){ setPpe(function(prev){ return prev.includes(id) ? prev.filter(function(x){return x!==id;}) : prev.concat([id]); }); }
+
+        var existingHasInduction = existingId ? isInductionDone(existingId) : false;
+        var existingHasRAMS = existingId ? isRAMSDone(existingId) : false;
+
+        function validate(){
+          var e = {};
+          if(mode==='OUT'){
+            if(!existingId) e.existingId = 'Select a person to sign out';
+            var lastOut = existingId ? (lastByWorker && lastByWorker.get(existingId)) : null;
+            if(!lastOut || lastOut.direction!=='IN') e.notOnSite = true;
           } else {
-            // Prevent new person duplicate IN by name+company
-            var nm = name.trim().toLowerCase();
-            var co = (company||'').trim().toLowerCase();
-            var cand = workers.find(function(w){
-              return (w.name||'').trim().toLowerCase() === nm &&
-                     (w.company||'').trim().toLowerCase() === co;
-            });
-            if(cand){
-              var lastCand = lastByWorker && lastByWorker.get(cand.id);
-              if(lastCand && lastCand.direction === 'IN'){
-                e.name = 'This person is already signed IN — choose them in "Existing person".';
+            if(!name.trim()) e.name='Name is required';
+            if(!company.trim()) e.company='Company is required';
+            if(settings.requireInduction && !induction && !existingHasInduction) e.induction = true;
+            if(settings.requireRAMS && !rams && !existingHasRAMS) e.rams = true;
+            var missing = (settings.requirePPE||[]).filter(function(id){ return !ppe.includes(id); });
+            if(missing.length) e.ppe = missing;
+            if(settings.requirePhoto && !photoDataUrl) e.photo = true;
+            if(!ack) e.ack = true;
+
+            // Block duplicate IN for same record
+            if(existingId){
+              var lastInForExisting = lastByWorker && lastByWorker.get(existingId);
+              if(lastInForExisting && lastInForExisting.direction === 'IN'){ e.existingId = 'Selected person is already signed IN'; }
+            } else {
+              // Prevent new person duplicate IN by name+company
+              var nm = name.trim().toLowerCase();
+              var co = (company||'').trim().toLowerCase();
+              var cand = workers.find(function(w){
+                return (w.name||'').trim().toLowerCase() === nm &&
+                       (w.company||'').trim().toLowerCase() === co;
+              });
+              if(cand){
+                var lastCand = lastByWorker && lastByWorker.get(cand.id);
+                if(lastCand && lastCand.direction === 'IN'){
+                  e.name = 'This person is already signed IN — choose them in "Existing person".';
+                }
               }
             }
           }
-        }
-        setErrors(e);
-        return Object.keys(e).length===0;
-      }
-
-      function submit(){
-        if(!validate()){ alert('Please fix the highlighted fields first.'); return; }
-        var workerId = existingId || uuid();
-        var profile = { id:workerId, name:name, company:company, role:role, cscs:cscs, phone:phone, email:email, emergencyContact:emergencyContact, vehicleReg:vehicleReg };
-        onUpsert(profile);
-
-        onVisit(workerId, mode, { ppe:ppe, induction:induction, rams:rams, notes:notes, photoDataUrl:photoDataUrl });
-
-        // Persist one-time flags (per site) when confirmed
-        if(mode==='IN'){
-          var flagsToSet = {};
-          if(induction) flagsToSet.induction = true;
-          if(rams) flagsToSet.rams = true;
-          if(Object.keys(flagsToSet).length){ onSetPersonSite(workerId, flagsToSet); }
+          setErrors(e);
+          return Object.keys(e).length===0;
         }
 
-        setExistingId(''); setName(''); setCompany(''); setRole(''); setCscs(''); setPhone(''); setEmail(''); setEmergencyContact(''); setVehicleReg('');
-        setPpe([]); setInduction(false); setRams(false); setNotes(''); setAck(false); setPhotoDataUrl(''); setErrors({});
-        alert('Successfully signed ' + (mode==='IN' ? 'IN' : 'OUT') + '.');
-      }
+        function submit(){
+          if(!validate()){ alert('Please fix the highlighted fields first.'); return; }
+          var workerId = existingId || uuid();
+          var profile = { id:workerId, name:name, company:company, role:role, cscs:cscs, phone:phone, email:email, emergencyContact:emergencyContact, vehicleReg:vehicleReg };
+          onUpsert(profile);
 
-      var existingOpts = [{value:'',label:'— New person —'}].concat(
-        workers.map(function(w){ return { value:w.id, label:(w.name + ' (' + w.company + ')') }; })
-      );
+          onVisit(workerId, mode, { ppe:ppe, induction:induction, rams:rams, notes:notes, photoDataUrl:photoDataUrl });
 
-      return React.createElement(Section, {title:'Sign ' + (mode==='IN' ? 'IN' : 'OUT'), right: React.createElement(Toggle,{checked:mode==='OUT', onChange:onModeToggle})},
-        React.createElement('div', {className:'grid grid-cols-1 md:grid-cols-2 gap-4'},
-          React.createElement(Select, {label:'Existing person' + (mode==='OUT'?' (required for OUT)':''), value:existingId, onChange:setExistingId, options:existingOpts, error:(errors.existingId ? errors.existingId : (errors.notOnSite ? 'Selected person is not currently signed in' : '')) }),
-          React.createElement(TextInput, {label:'Full name', value:name, onChange:setName, required:(mode==='IN'), error:(errors.name||'')}),
-          React.createElement(TextInput, {label:'Company', value:company, onChange:setCompany, required:(mode==='IN'), error:(errors.company||'')}),
-          React.createElement(TextInput, {label:'Trade/Role', value:role, onChange:setRole}),
-          React.createElement(TextInput, {label:'CSCS No. (optional)', value:cscs, onChange:setCscs}),
-          React.createElement(TextInput, {label:'Mobile (optional)', value:phone, onChange:setPhone}),
-          React.createElement(TextInput, {label:'Email (optional)', value:email, onChange:setEmail}),
-          React.createElement(TextInput, {label:'Emergency contact (optional)', value:emergencyContact, onChange:setEmergencyContact}),
-          React.createElement(TextInput, {label:'Vehicle reg (optional)', value:vehicleReg, onChange:setVehicleReg})
-        ),
-        mode==='IN' ? React.createElement('div', {className:'grid grid-cols-1 md:grid-cols-3 gap-4 mt-4'},
-          React.createElement('div', {className:'bg-gray-50 rounded-xl p-4'},
-            React.createElement('h3',{className:'font-medium mb-2'}, 'PPE on person'),
-            PPE_ITEMS.map(function(p){
-              return React.createElement(Checkbox, {key:p.id, checked:ppe.includes(p.id), onChange:function(){ togglePPE(p.id); }, label:p.label, error:(errors.ppe && errors.ppe.includes(p.id)) });
-            })
+          if(mode==='IN'){
+            var flagsToSet = {};
+            if(induction) flagsToSet.induction = true;
+            if(rams) flagsToSet.rams = true;
+            if(Object.keys(flagsToSet).length){ onSetPersonSite(workerId, flagsToSet); }
+          }
+
+          setExistingId(''); setName(''); setCompany(''); setRole(''); setCscs(''); setPhone(''); setEmail(''); setEmergencyContact(''); setVehicleReg('');
+          setPpe([]); setInduction(false); setRams(false); setNotes(''); setAck(false); setPhotoDataUrl(''); setErrors({});
+          alert('Successfully signed ' + (mode==='IN' ? 'IN' : 'OUT') + '.');
+        }
+
+        var existingOpts = [{value:'',label:'— New person —'}].concat(
+          workers.map(function(w){ return { value:w.id, label:(w.name + ' (' + w.company + ')') }; })
+        );
+
+        return React.createElement(Section, {title:'Sign ' + (mode==='IN' ? 'IN' : 'OUT'), right: React.createElement(Toggle,{checked:mode==='OUT', onChange:onModeToggle})},
+          React.createElement('div', {className:'grid grid-cols-1 md:grid-cols-2 gap-4'},
+            React.createElement(Select, {label:'Existing person' + (mode==='OUT'?' (required for OUT)':''), value:existingId, onChange:setExistingId, options:existingOpts, error:(errors.existingId ? errors.existingId : (errors.notOnSite ? 'Selected person is not currently signed in' : '')) }),
+            React.createElement(TextInput, {label:'Full name', value:name, onChange:setName, required:(mode==='IN'), error:(errors.name||'')}),
+            React.createElement(TextInput, {label:'Company', value:company, onChange:setCompany, required:(mode==='IN'), error:(errors.company||'')}),
+            React.createElement(TextInput, {label:'Trade/Role', value:role, onChange:setRole}),
+            React.createElement(TextInput, {label:'CSCS No. (optional)', value:cscs, onChange:setCscs}),
+            React.createElement(TextInput, {label:'Mobile (optional)', value:phone, onChange:setPhone}),
+            React.createElement(TextInput, {label:'Email (optional)', value:email, onChange:setEmail}),
+            React.createElement(TextInput, {label:'Emergency contact (optional)', value:emergencyContact, onChange:setEmergencyContact}),
+            React.createElement(TextInput, {label:'Vehicle reg (optional)', value:vehicleReg, onChange:setVehicleReg})
           ),
-          React.createElement('div', {className:'bg-gray-50 rounded-xl p-4'},
-            React.createElement('h3',{className:'font-medium mb-2'}, 'Declarations'),
-            (existingHasInduction && existingHasRAMS)
-              ? React.createElement('p',{className:'text-sm text-gray-600'}, 'Induction and RAMS already recorded for this site.')
-              : React.createElement(React.Fragment, null,
-                  React.createElement(Checkbox,{checked:induction,onChange:setInduction,label:'I have completed the site induction',error:!!errors.induction}),
-                  React.createElement(Checkbox,{checked:rams,onChange:setRams,label:'I have read and understood applicable RAMS',error:!!errors.rams})
-                ),
-            React.createElement(Checkbox,{checked:ack,onChange:setAck,label:'I understand site rules and emergency procedures',error:!!errors.ack})
+          mode==='IN' ? React.createElement('div', {className:'grid grid-cols-1 md:grid-cols-3 gap-4 mt-4'},
+            React.createElement('div', {className:'bg-gray-50 rounded-xl p-4'},
+              React.createElement('h3',{className:'font-medium mb-2'}, 'PPE on person'),
+              PPE_ITEMS.map(function(p){
+                return React.createElement(Checkbox, {key:p.id, checked:ppe.includes(p.id), onChange:function(){ togglePPE(p.id); }, label:p.label, error:(errors.ppe && errors.ppe.includes(p.id)) });
+              })
+            ),
+            React.createElement('div', {className:'bg-gray-50 rounded-xl p-4'},
+              React.createElement('h3',{className:'font-medium mb-2'}, 'Declarations'),
+              (existingHasInduction && existingHasRAMS)
+                ? React.createElement('p',{className:'text-sm text-gray-600'}, 'Induction and RAMS already recorded for this site.')
+                : React.createElement(React.Fragment, null,
+                    React.createElement(Checkbox,{checked:induction,onChange:setInduction,label:'I have completed the site induction',error:!!errors.induction}),
+                    React.createElement(Checkbox,{checked:rams,onChange:setRams,label:'I have read and understood applicable RAMS',error:!!errors.rams})
+                  ),
+              React.createElement(Checkbox,{checked:ack,onChange:setAck,label:'I understand site rules and emergency procedures',error:!!errors.ack})
+            ),
+            React.createElement('div', null,
+              React.createElement(CameraCapture, {value:photoDataUrl, onChange:setPhotoDataUrl}),
+              errors.photo ? React.createElement('p', {className:'text-xs text-red-600 mt-1'}, 'Photo is required') : null
+            )
+          ) : React.createElement('div', {className:'mt-2'},
+              React.createElement('p', {className:'text-xs text-gray-500'}, 'Optional: take a photo before signing out (Admin can view later).'),
+              React.createElement(CameraCapture, {value:photoDataUrl, onChange:setPhotoDataUrl})
           ),
-          React.createElement('div', null,
-            React.createElement(CameraCapture, {value:photoDataUrl, onChange:setPhotoDataUrl}),
-            errors.photo ? React.createElement('p', {className:'text-xs text-red-600 mt-1'}, 'Photo is required') : null
+          React.createElement('div', {className:'mt-4 flex flex-col md:flex-row gap-3'},
+            React.createElement('button', {onClick:submit, className:'px-4 py-3 rounded-xl text-white font-semibold ' + (mode==='IN'?'bg-green-600':'bg-red-600')}, 'Sign ' + (mode==='IN'?'IN':'OUT')),
+            React.createElement('button', {onClick:function(){ setExistingId(''); setName(''); setCompany(''); setRole(''); setCscs(''); setPhone(''); setEmail(''); setEmergencyContact(''); setVehicleReg(''); setPpe([]); setInduction(false); setRams(false); setNotes(''); setAck(false); setPhotoDataUrl(''); setErrors({}); }, className:'px-4 py-3 rounded-xl bg-gray-200'}, 'Clear')
           )
-        ) : React.createElement('div', {className:'mt-2'},
-            React.createElement('p', {className:'text-xs text-gray-500'}, 'Optional: take a photo before signing out (Admin can view later).'),
-            React.createElement(CameraCapture, {value:photoDataUrl, onChange:setPhotoDataUrl})
-        ),
-        React.createElement('div', {className:'mt-4 flex flex-col md:flex-row gap-3'},
-          React.createElement('button', {onClick:submit, className:'px-4 py-3 rounded-xl text-white font-semibold ' + (mode==='IN'?'bg-green-600':'bg-red-600')}, 'Sign ' + (mode==='IN'?'IN':'OUT')),
-          React.createElement('button', {onClick:function(){ setExistingId(''); setName(''); setCompany(''); setRole(''); setCscs(''); setPhone(''); setEmail(''); setEmergencyContact(''); setVehicleReg(''); setPpe([]); setInduction(false); setRams(false); setNotes(''); setAck(false); setPhotoDataUrl(''); setErrors({}); }, className:'px-4 py-3 rounded-xl bg-gray-200'}, 'Clear')
-        )
-      );
-    }
+        );
+      }
 
-    function PrintSheet(props){
-      var siteName = props.siteName, rows = props.rows;
-      var now = new Date();
-      return React.createElement('div', {className:'print-sheet'},
-        React.createElement('h1', null, 'FIRE ROLL CALL — ' + siteName),
-        React.createElement('p', null, now.toLocaleString()),
-        React.createElement('table', null,
-          React.createElement('thead', null,
-            React.createElement('tr', null,
-              React.createElement('th', null, '#'),
-              React.createElement('th', null, 'Name'),
-              React.createElement('th', null, 'Company'),
-              React.createElement('th', null, 'Time IN'),
-              React.createElement('th', null, 'Tick')
+      function PrintSheet(props){
+        var siteName = props.siteName, rows = props.rows;
+        var now = new Date();
+        return React.createElement('div', {className:'print-sheet'},
+          React.createElement('h1', null, 'FIRE ROLL CALL — ' + siteName),
+          React.createElement('p', null, now.toLocaleString()),
+          React.createElement('table', null,
+            React.createElement('thead', null,
+              React.createElement('tr', null,
+                React.createElement('th', null, '#'),
+                React.createElement('th', null, 'Name'),
+                React.createElement('th', null, 'Company'),
+                React.createElement('th', null, 'Time IN'),
+                React.createElement('th', null, 'Tick')
+              )
+            ),
+            React.createElement('tbody', null,
+              rows.map(function(r, i){
+                return React.createElement('tr', {key:r.id},
+                  React.createElement('td', null, String(i+1)),
+                  React.createElement('td', null, r.name),
+                  React.createElement('td', null, r.company || ''),
+                  React.createElement('td', null, r.timeIn ? new Date(r.timeIn).toLocaleTimeString() : ''),
+                  React.createElement('td', null, React.createElement('span', {className:'box'}))
+                );
+              })
+            )
+          )
+        );
+      }
+
+      function App(){
+        var _a = useState(function(){ return Object.assign({}, defaultSettings, load(KEY_SETTINGS,{})); }), settings=_a[0], setSettings=_a[1];
+        var _b = useState(function(){ return load(KEY_WORKERS,[]); }), workers=_b[0], setWorkers=_b[1];
+        var _c = useState(function(){ return load(KEY_VISITS,[]); }), visits=_c[0], setVisits=_c[1];
+        var _d = useState(false), admin=_d[0], setAdmin=_d[1];
+        var _e = useState(''), pinInput=_e[0], setPinInput=_e[1];
+        var _f = useState('IN'), mode=_f[0], setMode=_f[1];
+        var _g = useState(''), search=_g[0], setSearch=_g[1];
+        var _h = useState(function(){ return load(KEY_PERSON_SITE, {}); }), personSite=_h[0], setPersonSite=_h[1];
+        var _i = useState(null), historyFor=_i[0], setHistoryFor=_i[1];
+
+        useEffect(function(){ save(KEY_SETTINGS, settings); }, [settings]);
+        useEffect(function(){ save(KEY_WORKERS, workers); }, [workers]);
+        useEffect(function(){ save(KEY_VISITS, visits); }, [visits]);
+        useEffect(function(){ save(KEY_PERSON_SITE, personSite); }, [personSite]);
+
+        // Ensure siteId exists
+        useEffect(function(){
+          if(!settings.siteId){
+            setSettings(function(s){ var c=Object.assign({}, s); c.siteId = uuid(); return c; });
+          }
+        }, [settings, setSettings]);
+
+        function psKey(personId, siteId){ return personId + '::' + siteId; }
+        function isInductionDone(personId){
+          var k = psKey(personId, settings.siteId); var ps = personSite[k]; return !!(ps && ps.induction);
+        }
+        function isRAMSDone(personId){
+          var k = psKey(personId, settings.siteId); var ps = personSite[k]; return !!(ps && ps.rams);
+        }
+        function setPersonSiteFlags(personId, flags){
+          if(!personId || !settings.siteId) return;
+          var k = psKey(personId, settings.siteId);
+          setPersonSite(function(prev){
+            var next = Object.assign({}, prev);
+            var cur = next[k] || {};
+            if(typeof flags.induction === 'boolean' && flags.induction) cur.induction = true;
+            if(typeof flags.rams === 'boolean' && flags.rams) cur.rams = true;
+            next[k] = cur;
+            return next;
+          });
+        }
+
+        var lastByWorker = useMemo(function(){
+          var map = new Map();
+          for(var i=0;i<visits.length;i++){ var v=visits[i]; map.set(v.workerId, v); }
+          return map;
+        }, [visits]);
+
+        var activeWorkers = workers.filter(function(w){ var last = lastByWorker.get(w.id); return last && last.direction==='IN'; });
+
+        function upsertWorker(profile){
+          setWorkers(function(prev){
+            var i = prev.findIndex(function(p){ return p.id===profile.id; });
+            if(i===-1) return prev.concat([profile]);
+            var copy = prev.slice(0); copy[i]=profile; return copy;
+          });
+        }
+
+        function recordVisit(workerId, direction, payload){
+          if(direction==='OUT'){
+            var last = lastByWorker.get(workerId);
+            if(!last || last.direction!=='IN'){
+              alert('Cannot sign out someone who is not currently signed in.');
+              return;
+            }
+          }
+          if(direction==='IN'){
+            var lastIn = lastByWorker.get(workerId);
+            if(lastIn && lastIn.direction === 'IN'){
+              alert('This person is already signed in. Sign them OUT first.');
+              return;
+            }
+          }
+          var visit = { id:uuid(), workerId:workerId, direction:direction, timeISO:nowISO() };
+          for(var k in payload){ if(Object.prototype.hasOwnProperty.call(payload,k)){ visit[k]=payload[k]; } }
+          setVisits(function(v){ return v.concat([visit]); });
+        }
+
+        function exportCSV(){
+          var headers=[
+            {label:'Timestamp',get:function(r){return r.timeISO;}},
+            {label:'Direction',get:function(r){return r.direction;}},
+            {label:'Name',get:function(r){ var w=workers.find(function(x){return x.id===r.workerId;}); return w? w.name : ''; }},
+            {label:'Company',get:function(r){ var w=workers.find(function(x){return x.id===r.workerId;}); return w? w.company : ''; }},
+            {label:'Role',get:function(r){ var w=workers.find(function(x){return x.id===r.workerId;}); return w? w.role : ''; }},
+            {label:'CSCS',get:function(r){ var w=workers.find(function(x){return x.id===r.workerId;}); return w? w.cscs : ''; }},
+            {label:'Phone',get:function(r){ var w=workers.find(function(x){return x.id===r.workerId;}); return w? w.phone : ''; }},
+            {label:'Induction',get:function(r){ return r.induction ? 'Yes' : 'No'; }},
+            {label:'RAMS Ack',get:function(r){ return r.rams ? 'Yes' : 'No'; }},
+            {label:'PPE',get:function(r){ return (r.ppe||[]).join(';'); }},
+            {label:'Notes',get:function(r){ return r.notes || ''; }}
+          ];
+          var fn = 'site-attendance_' + new Date().toISOString().slice(0,10) + '.csv';
+          var csv = toCSV(visits, headers); download(fn, csv);
+        }
+
+        var printRows = useMemo(function(){
+          return activeWorkers.map(function(w){
+            return { id:w.id, name:w.name, company:w.company, timeIn:getLastIn(visits, w.id) };
+          });
+        }, [activeWorkers, visits]);
+
+        var historyRows = useMemo(function(){
+          if(!historyFor) return [];
+          return visits.filter(function(v){ return v.workerId===historyFor.id; }).slice().reverse();
+        }, [historyFor, visits]);
+
+        return React.createElement(React.Fragment, null,
+          React.createElement('div', {className:'print-only p-6'},
+            React.createElement(PrintSheet, {siteName:settings.siteName, rows:printRows})
+          ),
+          React.createElement('div', {className:'no-print min-h-screen bg-gray-50 p-4 md:p-8'},
+            React.createElement('header', {className:'mb-6 flex items-center justify-between'},
+              React.createElement('div', null,
+                React.createElement('h1', {className:'text-2xl md:text-3xl font-bold'}, settings.siteName),
+                React.createElement('p', {className:'text-sm text-gray-600'}, 'Site Sign-In / Sign-Out (Offline-ready)')
+              ),
+              React.createElement('div', {className:'flex items-center gap-3'},
+                React.createElement(Toggle, {checked:mode==='OUT', onChange:function(c){ setMode(c?'OUT':'IN'); }}),
+                !admin ? React.createElement('div',{className:'flex items-center gap-2'},
+                  React.createElement('input',{value:pinInput,onChange:function(e){setPinInput(e.target.value);},placeholder:'Admin PIN',className:'w-28 border rounded-xl px-3 py-1'}),
+                  React.createElement('button',{onClick:function(){ setAdmin(pinInput===settings.adminPin); },className:'px-3 py-2 rounded-xl bg-black text-white'},'Admin')
+                ) : React.createElement('button',{onClick:function(){ setAdmin(false); },className:'px-3 py-2 rounded-xl bg-gray-800 text-white'},'Exit Admin')
+              )
+            ),
+            React.createElement('div', {className:'grid grid-cols-1 lg:grid-cols-3 gap-6'},
+              React.createElement('div', {className:'lg:col-span-2'},
+                React.createElement(SignForm, {
+                  mode:mode, settings:settings,
+                  onUpsert:upsertWorker, onVisit:recordVisit,
+                  workers:workers, onModeToggle:function(){ setMode(mode==='IN'?'OUT':'IN'); },
+                  lastByWorker:lastByWorker,
+                  isInductionDone:isInductionDone, isRAMSDone:isRAMSDone,
+                  onSetPersonSite:setPersonSiteFlags
+                })
+              ),
+              React.createElement('div', {className:'lg:col-span-1'},
+                React.createElement(Section, {title:'On-site right now', right: React.createElement('div', {className:'flex items-center gap-2'},
+                    React.createElement('button',{onClick:exportCSV,className:'text-sm bg-black text-white px-3 py-2 rounded-xl'}, 'Export CSV'),
+                    React.createElement('button', {onClick:function(){ window.print(); }, className:'text-sm bg-amber-500 text-white px-3 py-2 rounded-xl'}, 'Fire Roll Call (Print)')
+                  )},
+                  React.createElement('div', {className:'flex items-center gap-2 mb-2'},
+                    React.createElement('input',{value:search,onChange:function(e){setSearch(e.target.value);},placeholder:'Search name/company',className:'w-full border rounded-xl px-3 py-2'}),
+                    React.createElement('button',{onClick:function(){ setSearch(''); },className:'text-sm underline'},'Clear')
+                  ),
+                  React.createElement(RosterList, {people: workers.filter(function(w){ var last = lastByWorker.get(w.id); return last && last.direction==='IN' && (w.name + ' ' + w.company).toLowerCase().includes(search.toLowerCase()); }), visits:visits})
+                ),
+                admin ? React.createElement(Section, {title:'Admin: Site settings'},
+                  React.createElement('div', {className:'space-y-3'},
+                    React.createElement(TextInput, {label:'Site name', value:settings.siteName, onChange:function(v){ setSettings(function(s){ var c=Object.assign({}, s); c.siteName=v; return c; }); }}),
+                    React.createElement('div', null,
+                      React.createElement('div', {className:'text-sm text-gray-700 mb-1'}, 'Site ID (auto)'),
+                      React.createElement('div', {className:'flex items-center gap-2'},
+                        React.createElement('input', {readOnly:true, value:settings.siteId||'', className:'w-full border rounded-xl px-3 py-2 bg-gray-50'}),
+                        React.createElement('button', {className:'px-3 py-2 rounded-xl bg-gray-200', onClick:function(){ if(navigator.clipboard){ navigator.clipboard.writeText(settings.siteId||''); } }}, 'Copy')
+                      ),
+                      React.createElement('p', {className:'text-xs text-gray-500 mt-1'}, 'This ID ensures induction/RAMS are tracked per site.')
+                    ),
+                    React.createElement('label', {className:'flex items-center gap-2'},
+                      React.createElement('input', {type:'checkbox', checked:!!settings.requirePhoto, onChange:function(e){ var v=e.target.checked; setSettings(function(s){ var c=Object.assign({}, s); c.requirePhoto=v; return c; }); }}),
+                      React.createElement('span', null, 'Require photo on sign-in')
+                    )
+                  )
+                ) : null,
+                admin ? React.createElement(Section, {title:'Admin: People'},
+                  React.createElement(AdminPeople, {
+                    workers:workers, visits:visits,
+                    isInductionDone:isInductionDone, isRAMSDone:isRAMSDone,
+                    onShowHistory:function(personId){
+                      var p = workers.find(function(w){return w.id===personId;});
+                      setHistoryFor(p||null);
+                    }
+                  })
+                ) : null,
+                admin ? React.createElement(Section, {title:'Admin: Recent entries'},
+                  React.createElement(AdminVisits, {visits:visits, workers:workers})
+                ) : null
+              )
+            ),
+            React.createElement('footer', {className:'mt-8 text-center text-xs text-gray-500'},
+              React.createElement('p', null, 'Data is stored locally in this browser. Export CSV for backups. © ' + (new Date().getFullYear()) + ' RSK Consultancy – Site Kiosk MVP')
             )
           ),
-          React.createElement('tbody', null,
-            rows.map(function(r, i){
-              return React.createElement('tr', {key:r.id},
-                React.createElement('td', null, String(i+1)),
-                React.createElement('td', null, r.name),
-                React.createElement('td', null, r.company || ''),
-                React.createElement('td', null, r.timeIn ? new Date(r.timeIn).toLocaleTimeString() : ''),
-                React.createElement('td', null, React.createElement('span', {className:'box'}))
-              );
-            })
-          )
-        )
-      );
-    }
+          historyFor ? React.createElement(HistoryModal, {
+            person:historyFor,
+            rows:historyRows,
+            onClose:function(){ setHistoryFor(null); }
+          }) : null
+        );
+      }
 
-    function App(){
-      var _a = useState(function(){ return Object.assign({}, defaultSettings, load(KEY_SETTINGS,{})); }), settings=_a[0], setSettings=_a[1];
-      var _b = useState(function(){ return load(KEY_WORKERS,[]); }), workers=_b[0], setWorkers=_b[1];
-      var _c = useState(function(){ return load(KEY_VISITS,[]); }), visits=_c[0], setVisits=_c[1];
-      var _d = useState(false), admin=_d[0], setAdmin=_d[1];
-      var _e = useState(''), pi_
+      var rootEl = document.getElementById('root');
+      if (!rootEl) { showBootError('Missing <div id=\"root\"> in HTML.'); return; }
+      var root = ReactDOM.createRoot(rootEl);
+      root.render(React.createElement(App));
+      hideBootPanel();
+    } catch (err) {
+      showBootError((err && err.message) ? err.message : 'Unknown error while booting app.');
+      console.error(err);
+    }
+  })();
+  </script>
+</body>
+</html>
